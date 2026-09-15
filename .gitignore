@@ -1,0 +1,34 @@
+# Секреты — НИКОГДА не коммитить
+.env
+*.env
+!.env.example
+*.key
+*.pem
+secrets.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Кеш tldextract (снимок Public Suffix List)
+.suffix_cache/
+*.tldextract*
+
+# IDE и ОС
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Логи
+*.log

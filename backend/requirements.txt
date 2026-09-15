@@ -1,9 +1,23 @@
-fastapi
-uvicorn[standard]
-httpx
-python-whois
-pydantic
-pydantic-settings
-tldextract
-idna
-python-dotenv
+# PhishGuard Backend — зависимости
+#
+# Версии зафиксированы по нижней границе с ограничением мажорной.
+# Раньше файл содержал голые имена пакетов без версий: мажорный
+# релиз любой зависимости (например, pydantic 1 → 2) ломал прод
+# при следующем же деплое, без единого изменения в нашем коде.
+
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+httpx>=0.27,<1.0
+pydantic>=2.7,<3.0
+pydantic-settings>=2.3,<3.0
+python-dotenv>=1.0,<2.0
+
+# Public Suffix List — нужен, чтобы отличать eTLD+1 от поддомена
+# (иначе «google.com.evil.ru» выглядит как домен google.com).
+tldextract>=5.1,<6.0
+
+# IDNA/punycode — декодирование xn-- доменов для детекта гомоглифов.
+idna>=3.6,<4.0
+
+# WHOIS используется только как запасной источник к RDAP.
+python-whois>=0.9,<1.0

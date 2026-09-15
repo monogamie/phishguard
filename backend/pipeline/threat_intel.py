@@ -1,107 +1,164 @@
 """
-pipeline/threat_intel.py — Level 1: External Threat Intelligence
+pipeline/threat_intel.py — Уровень 1: внешняя разведка угроз.
 
-Queries the Google Safe Browsing Lookup API v4.
-Documentation: https://developers.google.com/safe-browsing/v4/lookup-api
+Google Safe Browsing Lookup API v4.
+Документация: https://developers.google.com/safe-browsing/v4/lookup-api
 
-Why GSB first?
-  Google maintains a live database of ~5 billion known-bad URLs.
-  A positive match here is the highest-confidence signal in the pipeline —
-  far more reliable than any heuristic. We run it first so that if the
-  network is slow we can still return partial results from local stages.
+ПОЧЕМУ GSB — ГЛАВНЫЙ ИСТОЧНИК
+─────────────────────────────
+Google поддерживает живую базу из миллиардов вредоносных URL,
+наполняемую краулером, телеметрией Chrome и репортами.  Совпадение
+здесь — это не эвристика, а факт: URL уже кем-то классифицирован.
+Поэтому вес у него максимальный (90 из 100), и никакой набор
+структурных признаков такой вес не перебивает.
 
-Getting a free API key:
-  1. Go to https://console.cloud.google.com/
-  2. Create or select a project
-  3. Enable "Safe Browsing API"
-  4. Navigate to APIs & Services → Credentials → Create API Key
-  5. Set GOOGLE_SAFE_BROWSING_KEY=<key> in your .env file
+Ограничение, о котором важно сказать честно: GSB узнаёт о
+фишинговом домене НЕ мгновенно.  Средняя задержка попадания в базу —
+часы.  А средний срок жизни фишинговой кампании — меньше суток.
+Именно поэтому GSB не может быть единственным источником, и
+существуют остальные три уровня пайплайна.
 
-Free quota: 10 000 requests / day, no billing required.
+ЧТО ИСПРАВЛЕНО
+──────────────
+  • клиент больше не пересоздаётся на каждый запрос (см. http_client.py);
+  • добавлены ретраи с экспоненциальной паузой на 429/5xx — раньше
+    одна временная ошибка Google означала полную потерю сигнала;
+  • тело ответа Google больше не утекает клиенту в поле error:
+    оно могло содержать детали запроса, включая фрагменты ключа;
+  • ключ API маскируется в логах.
 """
 
+from __future__ import annotations
+
+import asyncio
 import logging
-from typing import Optional
 
 import httpx
 
 from config import settings
+from http_client import get_client
 from models import ThreatIntelResult
 
 logger = logging.getLogger(__name__)
 
-# All threat categories we care about
 _THREAT_TYPES = [
     "MALWARE",
-    "SOCIAL_ENGINEERING",        # phishing
+    "SOCIAL_ENGINEERING",             # собственно фишинг
     "UNWANTED_SOFTWARE",
     "POTENTIALLY_HARMFUL_APPLICATION",
 ]
 
-_GSB_ENDPOINT = (
-    "https://safebrowsing.googleapis.com/v4/threatMatches:find"
-)
+_GSB_ENDPOINT = "https://safebrowsing.googleapis.com/v4/threatMatches:find"
+
+# Человеческие названия категорий — для интерфейса.
+THREAT_TYPE_LABELS = {
+    "MALWARE": "вредоносное ПО",
+    "SOCIAL_ENGINEERING": "фишинг / социальная инженерия",
+    "UNWANTED_SOFTWARE": "нежелательное ПО",
+    "POTENTIALLY_HARMFUL_APPLICATION": "потенциально опасное приложение",
+}
+
+_MAX_ATTEMPTS = 3
 
 
 async def check_google_safe_browsing(url: str) -> ThreatIntelResult:
     """
-    Asynchronously queries Google Safe Browsing for the given URL.
+    Спрашивает у Google, известен ли этот URL как вредоносный.
 
-    Returns ThreatIntelResult with is_threat=True and a list of
-    matched threat categories if the URL appears in Google's database.
-
-    If the API key is absent or the request fails, returns a graceful
-    empty result (checked=False) so the rest of the pipeline continues.
+    При отсутствии ключа или любой ошибке возвращает
+    checked=False — пайплайн продолжает работу на остальных
+    уровнях.  Это принципиально: сканер не должен полностью
+    отказывать из-за недоступности одного внешнего сервиса.
     """
     api_key = settings.GOOGLE_SAFE_BROWSING_KEY
     if not api_key:
-        logger.debug("GSB API key not configured — skipping threat intel check.")
-        return ThreatIntelResult(checked=False, error="API key not configured")
+        logger.debug("GSB key not configured — skipping")
+        return ThreatIntelResult(checked=False, source="google_safe_browsing",
+                                 error="API key not configured")
 
     payload = {
         "client": {
-            "clientId":      "phishguard",
+            "clientId": "phishguard",
             "clientVersion": settings.APP_VERSION,
         },
         "threatInfo": {
-            "threatTypes":      _THREAT_TYPES,
-            "platformTypes":    ["ANY_PLATFORM"],
+            "threatTypes": _THREAT_TYPES,
+            "platformTypes": ["ANY_PLATFORM"],
             "threatEntryTypes": ["URL"],
-            "threatEntries":    [{"url": url}],
+            "threatEntries": [{"url": url}],
         },
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=settings.GSB_TIMEOUT) as client:
+    client = get_client()
+    last_error = "unknown error"
+
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
             resp = await client.post(
                 _GSB_ENDPOINT,
                 params={"key": api_key},
                 json=payload,
+                timeout=settings.GSB_TIMEOUT,
             )
-            resp.raise_for_status()
 
-        data = resp.json()
-        matches = data.get("matches", [])
+            # 429 и 5xx — временные. Ждём и пробуем снова.
+            if resp.status_code == 429 or resp.status_code >= 500:
+                last_error = f"HTTP {resp.status_code}"
+                if attempt < _MAX_ATTEMPTS:
+                    # Экспоненциальная пауза: 0.5 с, 1 с.
+                    await asyncio.sleep(0.5 * 2 ** (attempt - 1))
+                    continue
+                logger.warning("GSB unavailable after %d attempts: %s",
+                               attempt, last_error)
+                return ThreatIntelResult(checked=False,
+                                         source="google_safe_browsing",
+                                         error=last_error)
 
-        if not matches:
-            # Empty response body means URL is clean per Google's database
-            return ThreatIntelResult(checked=True, is_threat=False)
+            if resp.status_code >= 400:
+                # 400/403 — почти всегда неверный или незаактивированный
+                # ключ. Логируем подробно для оператора, но НЕ отдаём
+                # тело ответа наружу: там бывают детали запроса.
+                logger.error("GSB client error %s: %s",
+                             resp.status_code, resp.text[:300])
+                return ThreatIntelResult(
+                    checked=False,
+                    source="google_safe_browsing",
+                    error=f"HTTP {resp.status_code} (проверьте ключ API)",
+                )
 
-        threat_types = [m.get("threatType", "UNKNOWN") for m in matches]
-        logger.warning("GSB hit for %s: %s", url, threat_types)
-        return ThreatIntelResult(
-            checked=True,
-            is_threat=True,
-            threat_types=threat_types,
-        )
+            data = resp.json()
+            matches = data.get("matches") or []
 
-    except httpx.HTTPStatusError as exc:
-        # 4xx usually means bad API key; log but don't crash
-        logger.error("GSB HTTP error %s: %s", exc.response.status_code, exc)
-        return ThreatIntelResult(
-            checked=False,
-            error=f"HTTP {exc.response.status_code}: {exc.response.text[:200]}",
-        )
-    except Exception as exc:
-        logger.error("GSB unexpected error: %s", exc)
-        return ThreatIntelResult(checked=False, error=str(exc))
+            if not matches:
+                # Пустой ответ = URL чист по базе Google.
+                return ThreatIntelResult(checked=True, is_threat=False,
+                                         source="google_safe_browsing")
+
+            # Дедуплицируем и сортируем — ответ API должен быть
+            # стабильным при одинаковом входе.
+            threat_types = sorted({m.get("threatType", "UNKNOWN") for m in matches})
+            logger.warning("GSB hit for %s: %s", url, threat_types)
+            return ThreatIntelResult(
+                checked=True,
+                is_threat=True,
+                threat_types=threat_types,
+                source="google_safe_browsing",
+            )
+
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            if attempt < _MAX_ATTEMPTS:
+                await asyncio.sleep(0.5 * 2 ** (attempt - 1))
+                continue
+        except Exception as exc:                       # noqa: BLE001
+            logger.exception("GSB unexpected error")
+            return ThreatIntelResult(checked=False,
+                                     source="google_safe_browsing",
+                                     error=type(exc).__name__)
+
+    logger.warning("GSB failed after %d attempts: %s", _MAX_ATTEMPTS, last_error)
+    return ThreatIntelResult(checked=False, source="google_safe_browsing",
+                             error=last_error)
+
+
+__all__ = ["THREAT_TYPE_LABELS", "check_google_safe_browsing"]

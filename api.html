@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PhishGuard | О команде</title>
-    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <meta name="description" content="Команда, разработавшая PhishGuard — сервис проверки ссылок на фишинг.">
+    <link rel="icon" type="image/jpeg" href="logo.jpg">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;500;800&display=swap" rel="stylesheet">
     <style>
@@ -81,11 +82,12 @@
             <a href="index.html" class="hover:text-emerald-500 transition" data-i18n="nav_scanner">Сканер</a>
         </div>
         <div class="lang-toggle">
-            <button class="lang-btn" id="btnRu" onclick="setLang('ru')">RU</button>
-            <button class="lang-btn" id="btnEn" onclick="setLang('en')">EN</button>
+            <button class="lang-btn" type="button" id="btnRu" data-lang="ru">RU</button>
+            <button class="lang-btn" type="button" id="btnEn" data-lang="en">EN</button>
         </div>
     </div>
-    <button class="md:hidden flex flex-col gap-1.5 p-2 bg-transparent border-none cursor-pointer" onclick="toggleMenu()">
+    <button id="menuBtn" type="button" class="md:hidden flex flex-col gap-1.5 p-2 bg-transparent border-none cursor-pointer"
+            aria-expanded="false" aria-controls="mobileMenu" aria-label="Меню">
         <span class="block w-6 h-0.5 bg-slate-400"></span>
         <span class="block w-6 h-0.5 bg-slate-400"></span>
         <span class="block w-4 h-0.5 bg-slate-400"></span>
@@ -95,8 +97,8 @@
         <a href="index.html" data-i18n="nav_scanner">Сканер</a>
         <div class="lang-row">
             <div class="lang-toggle" style="width:fit-content">
-                <button class="lang-btn" id="btnRuM" onclick="setLang('ru')">RU</button>
-                <button class="lang-btn" id="btnEnM" onclick="setLang('en')">EN</button>
+                <button class="lang-btn" type="button" id="btnRuM" data-lang="ru">RU</button>
+                <button class="lang-btn" type="button" id="btnEnM" data-lang="en">EN</button>
             </div>
         </div>
     </div>
@@ -122,19 +124,19 @@
         <p class="text-center text-xs mono text-slate-600 uppercase tracking-widest mb-6" data-i18n="team_label">// Разработчики проекта</p>
 
         <div class="grid grid-cols-2 gap-4 mb-10">
-            <a href="https://t.me/TurN1K05" target="_blank" class="member-card">
+            <a href="https://t.me/TurN1K05" target="_blank" rel="noopener noreferrer" class="member-card">
                 <div class="member-avatar">🎨</div>
                 <div class="member-handle">@TurN1K05</div>
             </a>
-            <a href="https://t.me/MoNoGAMlE" target="_blank" class="member-card">
+            <a href="https://t.me/MoNoGAMlE" target="_blank" rel="noopener noreferrer" class="member-card">
                 <div class="member-avatar">💻</div>
                 <div class="member-handle">@MoNoGAMlE</div>
             </a>
-            <a href="https://t.me/Nyaresytr" target="_blank" class="member-card">
+            <a href="https://t.me/Nyaresytr" target="_blank" rel="noopener noreferrer" class="member-card">
                 <div class="member-avatar">🛡️</div>
                 <div class="member-handle">@Nyaresytr</div>
             </a>
-            <a href="https://t.me/wef122" target="_blank" class="member-card">
+            <a href="https://t.me/wef122" target="_blank" rel="noopener noreferrer" class="member-card">
                 <div class="member-avatar">🎭</div>
                 <div class="member-handle">@wef122</div>
             </a>
@@ -144,7 +146,7 @@
     <!-- Chat button -->
     <div class="anim d3 text-center">
         <p class="text-sm text-slate-500 mb-5" data-i18n="chat_sub">Есть вопросы? Пишите нам — ответим быстро.</p>
-        <a href="https://t.me/+pl8qTAYlbi45MDMy" target="_blank" class="tg-main-btn">
+        <a href="https://t.me/+pl8qTAYlbi45MDMy" target="_blank" rel="noopener noreferrer" class="tg-main-btn">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.833.941z"/>
             </svg>
@@ -155,25 +157,61 @@
 </main>
 
 <footer class="p-6 border-t border-gray-800 text-center text-xs text-gray-700 bg-black/20 mono">
-    <p>&copy; 2026 DetectorAnalizeAI. PhishGuard v0.1.0</p>
+    <p>&copy; 2026 DetectorAnalizeAI. PhishGuard v1.1.0</p>
 </footer>
 
 <script>
+'use strict';
 const T = {
-    ru:{ nav_api:'О команде', nav_scanner:'Сканер', h1:'О', h2:'команде', h_sub:'Мы — команда из 4 человек, которая разработала PhishGuard. Этот сайт — наш общий проект.', team_label:'// Разработчики проекта', chat_sub:'Есть вопросы? Пишите нам — ответим быстро.', chat_btn:'Написать в Telegram' },
-    en:{ nav_api:'Team', nav_scanner:'Scanner', h1:'About', h2:'the team', h_sub:'We are a team of 4 people who built PhishGuard together. This site is our joint project.', team_label:'// Project developers', chat_sub:'Have questions? Write to us — we reply fast.', chat_btn:'Message us on Telegram' }
+    ru:{ nav_api:'О команде', nav_scanner:'Сканер', h1:'О', h2:'команде',
+         h_sub:'Мы — команда из 4 человек, которая разработала PhishGuard. Этот сайт — наш общий проект.',
+         team_label:'// Разработчики проекта',
+         chat_sub:'Есть вопросы? Пишите нам — ответим быстро.',
+         chat_btn:'Написать в Telegram' },
+    en:{ nav_api:'Team', nav_scanner:'Scanner', h1:'About', h2:'the team',
+         h_sub:'We are a team of 4 people who built PhishGuard together. This site is our joint project.',
+         team_label:'// Project developers',
+         chat_sub:'Have questions? Write to us — we reply fast.',
+         chat_btn:'Message us on Telegram' }
 };
 
-let lang = localStorage.getItem('pg_lang') || 'ru';
+let lang = (localStorage.getItem('pg_lang') === 'en') ? 'en' : 'ru';
+
 function applyLang() {
     const t = T[lang];
-    document.querySelectorAll('[data-i18n]').forEach(el => { const k=el.getAttribute('data-i18n'); if(t[k]!==undefined) el.textContent=t[k]; });
-    ['btnRu','btnRuM'].forEach(id => { const el=document.getElementById(id); if(el) el.classList.toggle('active',lang==='ru'); });
-    ['btnEn','btnEnM'].forEach(id => { const el=document.getElementById(id); if(el) el.classList.toggle('active',lang==='en'); });
+    // Раньше атрибут lang всегда оставался "ru": скринридеры и
+    // автоперевод получали неверный язык страницы.
+    document.documentElement.lang = lang;
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        const k = el.getAttribute('data-i18n');
+        if (t[k] !== undefined) el.textContent = t[k];
+    });
+    ['btnRu','btnRuM'].forEach(id => { const el = document.getElementById(id); if (el) el.classList.toggle('active', lang === 'ru'); });
+    ['btnEn','btnEnM'].forEach(id => { const el = document.getElementById(id); if (el) el.classList.toggle('active', lang === 'en'); });
 }
-function setLang(l) { lang=l; localStorage.setItem('pg_lang',l); applyLang(); }
-let menuOpen=false;
-function toggleMenu() { menuOpen=!menuOpen; document.getElementById('mobileMenu').classList.toggle('open',menuOpen); }
+
+function setLang(value) {
+    lang = value;
+    try { localStorage.setItem('pg_lang', value); } catch {}
+    applyLang();
+}
+
+function toggleMenu(force) {
+    const menu = document.getElementById('mobileMenu');
+    const open = force !== undefined ? force : !menu.classList.contains('open');
+    menu.classList.toggle('open', open);
+    document.getElementById('menuBtn').setAttribute('aria-expanded', String(open));
+}
+
+// Обработчики вместо инлайновых onclick: так страница не зависит от
+// 'unsafe-inline' в CSP и разметка остаётся без логики.
+document.querySelectorAll('.lang-btn').forEach(b =>
+    b.addEventListener('click', () => setLang(b.dataset.lang)));
+document.getElementById('menuBtn').addEventListener('click', () => toggleMenu());
+// Меню не закрывалось после перехода по ссылке и оставалось открытым.
+document.getElementById('mobileMenu').querySelectorAll('a').forEach(a =>
+    a.addEventListener('click', () => toggleMenu(false)));
+
 applyLang();
 </script>
 </body>
