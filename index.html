@@ -1,11 +1,38 @@
-
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PhishGuard | Scanner</title>
-    <link rel="icon" type="image/x-icon" src="logo.jpg">
+    <meta name="description" content="PhishGuard — проверка ссылок на фишинг и мошенничество: Google Safe Browsing, база URLhaus, возраст домена и структурный анализ URL в одном отчёте.">
+    <meta property="og:title" content="PhishGuard — проверка ссылок на мошенничество">
+    <meta property="og:description" content="Вставьте ссылку и получите объяснимую оценку риска: что именно подозрительно и почему.">
+    <meta property="og:type" content="website">
+
+    <!--
+      Content-Security-Policy как эшелонированная защита от XSS.
+      Даже если в разметку каким-то образом попадёт чужой тег <script src=...>,
+      браузер не загрузит его: разрешены только наши источники.
+      'unsafe-eval' нужен Tailwind CDN (он компилирует классы через new Function).
+      frame-ancestors здесь намеренно нет: в <meta> браузер его игнорирует,
+      защиту от встраивания в iframe даёт заголовок X-Frame-Options от сервера.
+      В продакшене Tailwind собирают заранее, и тогда эту поблажку можно убрать.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com;
+        style-src  'self' 'unsafe-inline' https://fonts.googleapis.com;
+        font-src   'self' https://fonts.gstatic.com;
+        img-src    'self' data:;
+        connect-src 'self' https://phishguard-ayrt.onrender.com https://rdap.org;
+        object-src 'none';
+        base-uri 'self';
+        form-action 'none';
+    ">
+
+    <!-- Было: <link rel="icon" src="logo.jpg"> — у <link> нет атрибута src,
+         поэтому иконка не подхватывалась ни одним браузером. Правильный — href. -->
+    <link rel="icon" type="image/jpeg" href="logo.jpg">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;500;800&display=swap" rel="stylesheet">
     <style>
@@ -27,7 +54,7 @@
         .btn-scan::after { content:'';position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:linear-gradient(45deg,transparent,rgba(255,255,255,.1),transparent);transform:rotate(45deg);transition:.5s; }
         .btn-scan:hover::after { left:120%; }
         .url-tag { display:inline-block;font-family:'JetBrains Mono',monospace;font-size:.7rem;padding:.25rem .75rem;border-radius:9999px;background:rgba(16,20,29,.8);border:1px solid rgba(255,255,255,.06);color:#64748b;cursor:pointer;transition:border-color .2s,color .2s; }
-        .url-tag:hover { border-color:rgba(16,185,129,.5);color:#10b981; }
+        .url-tag:hover, .url-tag:focus-visible { border-color:rgba(16,185,129,.5);color:#10b981;outline:none; }
         .glass-card { background:rgba(10,14,20,.7);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.05);border-radius:1.5rem;transition:border-color .3s,box-shadow .3s,transform .3s; }
         .glass-card:hover { border-color:rgba(16,185,129,.4);box-shadow:0 0 30px rgba(16,185,129,.1);transform:translateY(-4px); }
         .lang-toggle { display:flex;align-items:center;border:1px solid rgba(16,185,129,.3);border-radius:6px;overflow:hidden; }
@@ -42,6 +69,10 @@
         #clearBtn { display:none;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;flex-shrink:0;color:#475569;transition:color .2s;background:transparent;cursor:pointer;border:none; }
         #clearBtn.show { display:flex; }
         #clearBtn:hover { color:#ef4444; }
+        .chain-item { word-break:break-all; }
+        .sr-only { position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0; }
+        details > summary { cursor:pointer;list-style:none; }
+        details > summary::-webkit-details-marker { display:none; }
     </style>
 </head>
 <body class="text-slate-300">
@@ -54,15 +85,19 @@
     </a>
     <div class="hidden md:flex items-center gap-6">
         <div class="flex space-x-8 text-xs font-bold uppercase tracking-widest text-slate-500">
-            <a href="api.html" class="hover:text-emerald-500 transition" data-i18n="nav_api">Обратная связь</a>
+            <!-- Было: тут стояло «Обратная связь», а в мобильном меню и в словаре
+                 переводов — «О команде». applyLang() всё равно перезаписывал текст,
+                 и подпись «прыгала» сразу после загрузки страницы. -->
+            <a href="api.html" class="hover:text-emerald-500 transition" data-i18n="nav_api">О команде</a>
             <a href="index.html" class="text-emerald-500 border-b border-emerald-500/50" data-i18n="nav_scanner">Сканер</a>
         </div>
-        <div class="lang-toggle">
-            <button class="lang-btn" id="btnRu" onclick="setLang('ru')">RU</button>
-            <button class="lang-btn" id="btnEn" onclick="setLang('en')">EN</button>
+        <div class="lang-toggle" role="group" aria-label="Язык интерфейса">
+            <button class="lang-btn" id="btnRu" type="button" data-lang="ru">RU</button>
+            <button class="lang-btn" id="btnEn" type="button" data-lang="en">EN</button>
         </div>
     </div>
-    <button class="md:hidden flex flex-col gap-1.5 p-2 bg-transparent border-none cursor-pointer" onclick="toggleMenu()">
+    <button id="menuBtn" class="md:hidden flex flex-col gap-1.5 p-2 bg-transparent border-none cursor-pointer"
+            type="button" aria-expanded="false" aria-controls="mobileMenu" aria-label="Меню">
         <span class="block w-6 h-0.5 bg-slate-400"></span>
         <span class="block w-6 h-0.5 bg-slate-400"></span>
         <span class="block w-4 h-0.5 bg-slate-400"></span>
@@ -71,9 +106,9 @@
         <a href="api.html" data-i18n="nav_api">О команде</a>
         <a href="index.html" class="active-page" data-i18n="nav_scanner">Сканер</a>
         <div class="lang-row">
-            <div class="lang-toggle" style="width:fit-content">
-                <button class="lang-btn" id="btnRuM" onclick="setLang('ru')">RU</button>
-                <button class="lang-btn" id="btnEnM" onclick="setLang('en')">EN</button>
+            <div class="lang-toggle" role="group" aria-label="Язык интерфейса">
+                <button class="lang-btn" id="btnRuM" type="button" data-lang="ru">RU</button>
+                <button class="lang-btn" id="btnEnM" type="button" data-lang="en">EN</button>
             </div>
         </div>
     </div>
@@ -89,27 +124,23 @@
         </p>
     </div>
 
+    <label for="urlInput" class="sr-only" data-i18n="input_label">Адрес для проверки</label>
     <div class="glass p-2 rounded-2xl flex items-center glow transition-all duration-300">
         <input id="urlInput" type="text" data-i18n-ph="input_ph"
             placeholder="Введите URL для проверки..."
-            class="bg-transparent w-full px-3 md:px-6 py-3 md:py-4 outline-none text-emerald-400 mono text-xs md:text-sm min-w-0"
-            oninput="onInputChange()" onkeydown="if(event.key==='Enter') startScan()">
-        <button id="clearBtn" onclick="clearInput()" title="Очистить">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg>
+            autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+            aria-describedby="errorMsg"
+            class="bg-transparent w-full px-3 md:px-6 py-3 md:py-4 outline-none text-emerald-400 mono text-xs md:text-sm min-w-0">
+        <button id="clearBtn" type="button" title="Очистить" aria-label="Очистить поле">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M1 1l12 12M13 1L1 13"/></svg>
         </button>
-        <button id="scanBtn" onclick="startScan()"
+        <button id="scanBtn" type="button"
             class="btn-scan bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-bold px-4 md:px-8 py-3 md:py-4 rounded-xl transition shadow-lg shadow-emerald-500/20 whitespace-nowrap ml-1 text-xs md:text-sm flex-shrink-0" data-i18n="btn_scan">
             Проверить
         </button>
     </div>
 
-    <div class="flex flex-wrap gap-2 justify-center max-w-3xl mx-auto mt-4 mb-2">
-        <span class="url-tag" onclick="setUrl('https://paypa1.com/secure-login')">paypa1.com</span>
-        <span class="url-tag" onclick="setUrl('https://bank-of-america.secure-login.xyz/verify')">bank-of-america.secure-login.xyz</span>
-        <span class="url-tag" onclick="setUrl('https://google.com')">google.com ✓</span>
-        <span class="url-tag" onclick="setUrl('https://аmazon.com/login')" data-i18n="tag_cyrillic">amazon.com (кириллица)</span>
-        <span class="url-tag" onclick="setUrl('https://paypal.com.account-verify.ru/login?token=abc')">paypal.com.account-verify.ru</span>
-    </div>
+    <div id="sampleTags" class="flex flex-wrap gap-2 justify-center max-w-3xl mx-auto mt-4 mb-2"></div>
 
     <div id="loadingBar" class="hidden mt-6 text-left">
         <p id="loadingText" class="text-xs mono text-emerald-500 mb-2 tracking-widest">АНАЛИЗИРУЮ...</p>
@@ -117,12 +148,13 @@
             <div id="progressFill" class="h-full bg-emerald-500 w-0 shadow-[0_0_8px_rgba(16,185,129,0.6)]"></div>
         </div>
     </div>
-    <p id="errorMsg" class="hidden mt-4 text-sm text-red-400 mono"></p>
+    <p id="errorMsg" class="hidden mt-4 text-sm text-red-400 mono" role="alert"></p>
+    <div id="inlineSlot"></div>
 
-    <div id="resultPanel" class="mt-10 text-left space-y-4">
+    <div id="resultPanel" class="mt-10 text-left space-y-4" aria-live="polite">
         <div id="verdictCard" class="glass rounded-3xl p-6 flex items-center gap-6">
             <div class="relative flex-shrink-0 w-20 h-20 flex items-center justify-center">
-                <svg class="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 80 80">
+                <svg class="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 80 80" aria-hidden="true">
                     <circle cx="40" cy="40" r="34" stroke="#1e293b" stroke-width="5" fill="none"/>
                     <circle id="scoreCircle" cx="40" cy="40" r="34" stroke="#38bdf8" stroke-width="5" fill="none" stroke-dasharray="213.6" stroke-dashoffset="213.6" stroke-linecap="round"/>
                 </svg>
@@ -131,13 +163,25 @@
             <div class="flex-1 min-w-0">
                 <p id="verdictLabel" class="text-2xl font-extrabold tracking-wide">—</p>
                 <p id="verdictUrl" class="text-sm text-slate-500 mono truncate mt-1"></p>
+                <!-- Отдельный контейнер для «тегов движков». Раньше они
+                     вставлялись через insertAdjacentHTML сразу после
+                     #verdictUrl и накапливались при повторных сканах. -->
+                <div id="engineTags" class="flex flex-wrap gap-2 mt-2"></div>
             </div>
         </div>
-        <div id="signalsGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
-        <div id="aiSection" class="glass rounded-3xl p-6 border-l-2 border-emerald-500 hidden">
-            <span class="text-[10px] mono tracking-widest px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 inline-block mb-4" data-i18n="ai_label">AI АНАЛИЗ</span>
-            <p id="aiText" class="text-sm text-slate-300 leading-relaxed mono whitespace-pre-wrap"></p>
+
+        <div id="redirectCard" class="glass rounded-3xl p-6 border-l-2 border-amber-500 hidden">
+            <span class="text-[10px] mono tracking-widest px-2 py-1 rounded bg-amber-500/10 border border-amber-500/30 text-amber-400 inline-block mb-4" data-i18n="chain_label">ЦЕПОЧКА ПЕРЕАДРЕСАЦИЙ</span>
+            <ol id="redirectChain" class="text-xs mono text-slate-300 space-y-1 list-decimal list-inside"></ol>
         </div>
+
+        <div id="signalsGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+
+        <details id="rawDetails" class="glass rounded-3xl p-6 hidden">
+            <summary class="text-[10px] mono tracking-widest text-slate-500 uppercase hover:text-emerald-400 transition" data-i18n="raw_label">Технические данные ответа</summary>
+            <pre id="rawJson" class="mt-4 text-[10px] mono text-slate-400 overflow-x-auto whitespace-pre-wrap break-all"></pre>
+        </details>
+
         <p class="text-center text-xs text-slate-600 pb-4" data-i18n="disclaimer">
             ⚠ Инструмент носит информационный характер. Всегда проявляйте осторожность при переходе по незнакомым ссылкам.
         </p>
@@ -147,649 +191,1210 @@
         <div class="glass-card p-8 text-left">
             <p class="text-emerald-400 text-xs mono mb-5" data-i18n="f1_label">01. Детализация</p>
             <h3 class="text-2xl font-bold text-white mb-3" data-i18n="f1_title">Полная информация об URL-адресе</h3>
-            <p class="text-sm text-gray-400 leading-relaxed" data-i18n="f1_desc">Предоставление пользователю детальной информации об URL-адресе.</p>
+            <p class="text-sm text-gray-400 leading-relaxed" data-i18n="f1_desc">Каждый признак объясняется: видно, что именно сработало и сколько баллов добавило.</p>
         </div>
         <div class="glass-card p-8 text-left">
             <p class="text-emerald-400 text-xs mono mb-5" data-i18n="f2_label">02. Скорость</p>
-            <h3 class="text-2xl font-bold text-white mb-3" data-i18n="f2_speed">&lt; 2 секунд</h3>
-            <p class="text-sm text-gray-400 leading-relaxed" data-i18n="f2_desc">Мгновенный вердикт безопасности благодаря оптимизированным моделям.</p>
+            <h3 class="text-2xl font-bold text-white mb-3" data-i18n="f2_speed">Четыре источника разом</h3>
+            <p class="text-sm text-gray-400 leading-relaxed" data-i18n="f2_desc">Внешние проверки идут параллельно, а результат кешируется.</p>
         </div>
         <div class="glass-card p-8 text-left">
             <p class="text-emerald-400 text-xs mono mb-5" data-i18n="f3_label">03. Интеграция</p>
             <h3 class="text-2xl font-bold text-white mb-3" data-i18n="f3_title">Открытый API</h3>
-            <p class="text-sm text-gray-400 leading-relaxed" data-i18n="f3_desc">Легко встраивается в любой корпоративный прокси-сервер или браузер.</p>
+            <p class="text-sm text-gray-400 leading-relaxed" data-i18n="f3_desc">POST /scan возвращает JSON с машиночитаемыми кодами признаков.</p>
         </div>
     </div>
 </main>
 
 <footer class="p-6 border-t border-gray-800 text-center text-xs text-gray-700 bg-black/20 mono">
-    <p>&copy; 2026 DetectorAnalizeAI. PhishGuard v0.1.0</p>
+    <p>&copy; 2026 DetectorAnalizeAI. PhishGuard v1.1.0</p>
 </footer>
 
 <script>
-const T = {
-    ru:{
+'use strict';
+/* ═══════════════════════════════════════════════════════════════════
+   PhishGuard — клиентская часть
+
+   АРХИТЕКТУРА
+   ───────────
+   Основной анализ выполняет бэкенд (POST /scan). Браузер для этого не
+   годится: из него нельзя обратиться ни к Google Safe Browsing, ни к
+   URLhaus (CORS + ключи API), и любой ключ, положенный в HTML, — это
+   опубликованный ключ.
+
+   Локальный движок эвристик оставлен как ОФЛАЙН-РЕЗЕРВ: если бэкенд
+   не ответил (холодный старт бесплатного хостинга занимает до минуты),
+   пользователь всё равно получает структурный анализ, а не пустой
+   экран. Резерв использует те же коды признаков, веса и пороги,
+   что и бэкенд, — иначе один и тот же адрес получал бы два разных
+   вердикта в зависимости от доступности сервера (так и было раньше:
+   фронтенд считал опасным всё от 55 баллов, бэкенд — от 60).
+
+   ЧТО ИСПРАВЛЕНО В ЭТОМ ФАЙЛЕ
+   ───────────────────────────
+   1. XSS (критично). renderResult() и showInlineResult() собирали
+      разметку строками и присваивали в innerHTML, подставляя туда
+      пользовательский ввод и текст от сервера. validateUrl() проверял
+      набор символов ТОЛЬКО у имени хоста, поэтому ввод вида
+        evil.com/<img/src=x/onerror=...>
+      проходил проверку целиком (точка есть, пробелов нет, хост
+      «evil.com» валиден) и исполнялся в DOM. Теперь весь текст
+      попадает в документ через textContent, а узлы создаются
+      через createElement.
+   2. Определение «корневого домена» брало две последние метки, из-за
+      чего для amazon.co.uk корнем оказывался «co.uk». Все проверки по
+      спискам для доменов в зонах co.uk / gov.ru / com.br не работали.
+   3. Движок Claude обращался к api.anthropic.com прямо из браузера,
+      без ключа и в обход CORS. Он не мог сработать ни разу, но блок
+      «AI АНАЛИЗ» был в интерфейсе. Удалён.
+   4. Запрос к бэкенду шёл без таймаута: при зависшем сервере кнопка
+      оставалась заблокированной навсегда.
+   5. Enter запускал новый скан поверх идущего (обработчик не смотрел
+      на disabled у кнопки). Добавлен флаг isScanning.
+   6. Кеш жил в обычном Map и терялся при перезагрузке, а ключом был
+      сырой ввод: «google.com» и «https://google.com» считались
+      разными адресами. Теперь localStorage и нормализованный ключ.
+   7. Тексты признаков были захардкожены по-русски: в режиме EN
+      интерфейс переводился, а результаты — нет.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ─── 1. Конфигурация ─────────────────────────────────────────────── */
+
+const BACKEND_URL   = 'https://phishguard-ayrt.onrender.com';
+const BACKEND_TIMEOUT_MS = 30000;   // холодный старт Render занимает до ~50 с
+const CACHE_TTL_MS  = 15 * 60 * 1000;   // столько же, сколько CACHE_TTL_SCAN на сервере
+const CACHE_KEY     = 'pg_cache_v2';
+const CACHE_MAX     = 50;
+
+// Пороги вердиктов. Значения синхронизированы с backend/config.py:
+// PHISHING_THRESHOLD=60, SUSPICIOUS_MIN=30.
+const THRESHOLD_PHISHING   = 60;
+const THRESHOLD_SUSPICIOUS = 30;
+
+// Веса локального движка — копия DEFAULT_WEIGHTS из backend/config.py.
+const W = {
+    ip_in_url: 40, at_symbol: 50, punycode: 30, non_ascii_host: 35,
+    mixed_scripts: 45, non_standard_port: 25, excessive_subdomains: 20,
+    long_url: 15, long_domain: 15, excessive_hyphens: 15, redirect_params: 20,
+    encoded_host: 25, insecure_scheme: 15, shortener: 10,
+    trigger_keywords: 12, trigger_keywords_many: 22, suspicious_tld: 20,
+    digits_in_domain: 10, brand_impersonation: 45, brand_typosquat: 50,
+    brand_homograph: 60, domain_age_unknown: 5,
+};
+const TRUSTED_SCORE_CAP = 15;
+
+/* ─── 2. Локализация ──────────────────────────────────────────────── */
+
+const I18N = {
+    ru: {
         nav_api:'О команде', nav_scanner:'Сканер',
-        hero_line1:'Сайт для защиты', hero_line2:'от угроз',
+        hero_line1:'Сервис для защиты', hero_line2:'от угроз',
         hero_sub:'Мгновенный анализ фишинговых угроз. Вставьте ссылку, чтобы проверить её на наличие угроз.',
-        input_ph:'Введите URL для проверки...', btn_scan:'Проверить',
-        ai_label:'AI АНАЛИЗ',
+        input_label:'Адрес для проверки', input_ph:'Введите URL для проверки...', btn_scan:'Проверить',
+        chain_label:'ЦЕПОЧКА ПЕРЕАДРЕСАЦИЙ', raw_label:'Технические данные ответа',
         disclaimer:'⚠ Инструмент носит информационный характер. Всегда проявляйте осторожность при переходе по незнакомым ссылкам.',
-        f1_label:'01. Детализация', f1_title:'Полная информация об URL-адресе', f1_desc:'Предоставление пользователю детальной информации об URL-адресе.',
-        f2_label:'02. Скорость', f2_speed:'< 2 секунд', f2_desc:'Вердикт безопасности менее чем за 2 секунды.',
-        f3_label:'03. Интеграция', f3_title:'Открытый API', f3_desc:'Легко встраивается в любой корпоративный прокси-сервер или браузер.',
-        tag_cyrillic:'amazon.com (кириллица)',
-        err_url:'Введите корректный адрес сайта, например: google.com или https://example.com',
+        f1_label:'01. Детализация', f1_title:'Полная информация об URL-адресе', f1_desc:'Каждый признак объясняется: видно, что именно сработало и сколько баллов добавило.',
+        f2_label:'02. Скорость', f2_speed:'Четыре источника разом', f2_desc:'Внешние проверки идут параллельно, а результат кешируется.',
+        f3_label:'03. Интеграция', f3_title:'Открытый API', f3_desc:'POST /scan возвращает JSON с машиночитаемыми кодами признаков.',
+        err_empty:'Введите адрес сайта',
         err_short:'Адрес слишком короткий',
         err_space:'Адрес не может содержать пробелы',
-        err_nodot:'Адрес должен содержать точку и TLD (например .com, .ru)',
-        err_tld:'Неверный TLD — должен быть минимум 2 символа',
-        alert_empty:'Введите URL для проверки',
-        steps:['🔍 Проверка формата...','⚙️ Локальный анализ...','🌐 Проверка баз данных и AI...','✅ Готово'],
+        err_nodot:'Адрес должен содержать точку и домен верхнего уровня (например .com, .ru)',
+        err_tld:'Некорректный домен верхнего уровня — минимум 2 символа',
+        err_scheme:'Поддерживаются только адреса http:// и https://',
+        err_chars:'Адрес содержит недопустимые символы',
+        err_long:'Адрес слишком длинный (максимум 2048 символов)',
+        err_url:'Введите корректный адрес, например: google.com или https://example.com',
+        step_connect:'Подключение к серверу...',
+        step_analyze:'Анализ: базы угроз, возраст домена, структура...',
+        step_local:'Сервер недоступен — локальный анализ...',
+        step_done:'Готово',
         v_safe:'БЕЗОПАСНО', v_susp:'ПОДОЗРИТЕЛЬНО', v_danger:'ОПАСНО',
-        src_local:'Эвристика', src_urlhaus:'URLhaus DB', src_claude:'Claude AI', src_rdap:'RDAP',
+        tag_backend:'Сервер: ✓', tag_local:'Локальный анализ',
+        tag_offline:'Сервер недоступен', tag_cached:'из кеша',
+        conf:'достоверность', score_of:'из 100',
+        redirect_to:'ведёт на',
     },
-    en:{
+    en: {
         nav_api:'Team', nav_scanner:'Scanner',
-        hero_line1:'Protection from', hero_line2:'Threats',
-        hero_sub:'Instant phishing threat analysis. Paste a link to check it for threats.',
-        input_ph:'Enter URL to check...', btn_scan:'Scan',
-        ai_label:'AI ANALYSIS',
-        disclaimer:'⚠ This tool is for informational purposes only. Always be cautious when clicking unknown links.',
-        f1_label:'01. Details', f1_title:'Full URL Address Information', f1_desc:'Providing users with detailed information about the URL address.',
-        f2_label:'02. Speed', f2_speed:'< 2 seconds', f2_desc:'Security verdict in under 2 seconds.',
-        f3_label:'03. Integration', f3_title:'Open API', f3_desc:'Easily embeds into any corporate proxy server or browser.',
-        tag_cyrillic:'amazon.com (cyrillic)',
-        err_url:'Enter a valid website address, e.g.: google.com or https://example.com',
+        hero_line1:'Protection from', hero_line2:'threats',
+        hero_sub:'Instant phishing analysis. Paste a link to check it for threats.',
+        input_label:'URL to check', input_ph:'Enter URL to check...', btn_scan:'Scan',
+        chain_label:'REDIRECT CHAIN', raw_label:'Raw response data',
+        disclaimer:'⚠ This tool is informational only. Always be careful with unfamiliar links.',
+        f1_label:'01. Details', f1_title:'Full URL breakdown', f1_desc:'Every signal is explained: what fired and how many points it added.',
+        f2_label:'02. Speed', f2_speed:'Four sources at once', f2_desc:'External checks run in parallel and results are cached.',
+        f3_label:'03. Integration', f3_title:'Open API', f3_desc:'POST /scan returns JSON with machine-readable signal codes.',
+        err_empty:'Enter a website address',
         err_short:'Address is too short',
         err_space:'Address cannot contain spaces',
-        err_nodot:'Address must contain a dot and TLD (e.g. .com, .ru)',
+        err_nodot:'Address must contain a dot and a TLD (e.g. .com, .ru)',
         err_tld:'Invalid TLD — must be at least 2 characters',
-        alert_empty:'Please enter a URL',
-        steps:['🔍 Validating format...','⚙️ Local analysis...','🌐 Checking databases & AI...','✅ Done'],
+        err_scheme:'Only http:// and https:// addresses are supported',
+        err_chars:'Address contains invalid characters',
+        err_long:'Address is too long (2048 characters max)',
+        err_url:'Enter a valid address, e.g. google.com or https://example.com',
+        step_connect:'Connecting to server...',
+        step_analyze:'Analysing: threat feeds, domain age, structure...',
+        step_local:'Server unavailable — local analysis...',
+        step_done:'Done',
         v_safe:'SAFE', v_susp:'SUSPICIOUS', v_danger:'DANGER',
-        src_local:'Heuristics', src_urlhaus:'URLhaus DB', src_claude:'Claude AI', src_rdap:'RDAP',
-    }
+        tag_backend:'Server: ✓', tag_local:'Local analysis',
+        tag_offline:'Server unavailable', tag_cached:'cached',
+        conf:'confidence', score_of:'of 100',
+        redirect_to:'leads to',
+    },
 };
 
-let lang = localStorage.getItem('pg_lang') || 'ru';
+/*
+   Словарь признаков. Ключ — машиночитаемый код, который присылает
+   бэкенд (поле signals[].code) и который генерирует локальный движок.
+   Именно ради этого на сервере появился тип Signal: раньше уровень
+   опасности определялся поиском эмодзи в русской строке
+   (reason.includes('🚨')), поэтому перевести результат было нельзя
+   в принципе, а изменение текста ломало раскраску интерфейса.
+*/
+const SIG = {
+    ru: {
+        GSB_MATCH:{t:'Google Safe Browsing', d:'Адрес числится в базе угроз Google.'},
+        GSB_CLEAN:{t:'Google Safe Browsing', d:'В базе угроз Google не найден.'},
+        URLHAUS_URL:{t:'URLhaus', d:'Ссылка есть в базе вредоносных URL abuse.ch.'},
+        URLHAUS_HOST:{t:'URLhaus: хост', d:'С этого хоста уже раздавали вредоносное ПО.'},
+        URLHAUS_CLEAN:{t:'URLhaus', d:'В базе вредоносных URL не найден.'},
+        DOMAIN_VERY_NEW:{t:'Возраст домена', d:'Домен зарегистрирован считанные дни назад.'},
+        DOMAIN_NEW:{t:'Возраст домена', d:'Домену меньше месяца — типичный возраст фишингового домена.'},
+        DOMAIN_RECENT:{t:'Возраст домена', d:'Домену меньше трёх месяцев.'},
+        DOMAIN_MATURE:{t:'Возраст домена', d:'Зрелый домен с историей.'},
+        DOMAIN_AGE_UNKNOWN:{t:'Возраст домена', d:'Дату регистрации получить не удалось.'},
+        DOMAIN_NOT_REGISTERED:{t:'Регистрация домена', d:'Домен не зарегистрирован.'},
+        IP_IN_URL:{t:'IP вместо домена', d:'Адрес задан IP-адресом, а не доменным именем.'},
+        AT_SYMBOL:{t:'Символ @ в адресе', d:'Всё до @ браузер считает логином. Настоящий сайт — тот, что после @.'},
+        BRAND_HOMOGRAPH:{t:'Подмена символов', d:'Домен визуально неотличим от известного бренда, но записан другими символами.'},
+        BRAND_TYPOSQUAT:{t:'Опечаточный домен', d:'Домен отличается от известного бренда на пару символов.'},
+        BRAND_IMPERSONATION:{t:'Чужой бренд в домене', d:'Имя бренда использовано в домене, который бренду не принадлежит.'},
+        BRAND_CLEAN:{t:'Имитация брендов', d:'Имитации известных брендов не обнаружено.'},
+        PUNYCODE:{t:'Punycode (IDN)', d:'Домен закодирован как xn--… и отображается иначе, чем записан.'},
+        MIXED_SCRIPTS:{t:'Смешение алфавитов', d:'В одном слове домена символы разных алфавитов — признак подмены.'},
+        NON_ASCII_HOST:{t:'Не-ASCII в домене', d:'Домен содержит символы вне латиницы.'},
+        ENCODED_HOST:{t:'Кодирование в домене', d:'В доменной части использовано процентное кодирование (%XX).'},
+        NON_STANDARD_PORT:{t:'Нестандартный порт', d:'Веб-сервисы работают на портах 80 и 443.'},
+        INSECURE_SCHEME:{t:'Без шифрования', d:'Используется http:// — введённые данные передаются открытым текстом.'},
+        REDIRECT_PARAMS:{t:'Параметры переадресации', d:'В адресе есть параметры вида ?url= / ?goto= — через них легитимный сайт используют как трамплин.'},
+        EXCESSIVE_SUBDOMAINS:{t:'Много поддоменов', d:'Настоящий домен — всегда последние две части адреса, остальное подставляет владелец.'},
+        LONG_URL:{t:'Длинный адрес', d:'Длинный адрес мешает разглядеть настоящий домен в адресной строке.'},
+        LONG_DOMAIN:{t:'Длинное имя домена', d:'Нетипично длинное имя домена.'},
+        EXCESSIVE_HYPHENS:{t:'Много дефисов', d:'Дефисами «склеивают» правдоподобное имя из чужого бренда и слов.'},
+        TRIGGER_KEYWORDS:{t:'Тревожные слова', d:'Слова, создающие ощущение срочности и подталкивающие ввести данные.'},
+        SUSPICIOUS_TLD:{t:'Подозрительная зона', d:'Зона раздаётся бесплатно, поэтому её массово используют для одноразовых доменов.'},
+        DIGITS_IN_DOMAIN:{t:'Цифры в домене', d:'Цифры часто заменяют похожие буквы: 0 → o, 1 → l.'},
+        SHORTENER:{t:'Сокращатель ссылок', d:'Сервис сокращения скрывает настоящий адрес.'},
+        SHORTENER_UNRESOLVED:{t:'Ссылка не развёрнута', d:'Это сокращённая ссылка, но конечный адрес определить не удалось.'},
+        CROSS_DOMAIN_REDIRECT:{t:'Смена домена', d:'Переадресация уводит на другой домен.'},
+        LONG_REDIRECT_CHAIN:{t:'Длинная цепочка', d:'Несколько переадресаций подряд — приём сокрытия конечного адреса.'},
+        TRUSTED_DOMAIN:{t:'Репутация домена', d:'Известный домен с проверенной репутацией.'},
+        HTTPS_OK:{t:'Протокол', d:'Соединение шифруется (HTTPS).'},
+        ASCII_OK:{t:'Символы', d:'Только стандартные латинские символы.'},
+        TLD_OK:{t:'Зона', d:'Обычная доменная зона.'},
+    },
+    en: {
+        GSB_MATCH:{t:'Google Safe Browsing', d:'Listed in Google’s threat database.'},
+        GSB_CLEAN:{t:'Google Safe Browsing', d:'Not found in Google’s threat database.'},
+        URLHAUS_URL:{t:'URLhaus', d:'Listed in the abuse.ch malicious URL database.'},
+        URLHAUS_HOST:{t:'URLhaus: host', d:'This host has distributed malware before.'},
+        URLHAUS_CLEAN:{t:'URLhaus', d:'Not found in the malicious URL database.'},
+        DOMAIN_VERY_NEW:{t:'Domain age', d:'Registered only days ago.'},
+        DOMAIN_NEW:{t:'Domain age', d:'Less than a month old — typical for phishing domains.'},
+        DOMAIN_RECENT:{t:'Domain age', d:'Less than three months old.'},
+        DOMAIN_MATURE:{t:'Domain age', d:'Mature domain with history.'},
+        DOMAIN_AGE_UNKNOWN:{t:'Domain age', d:'Registration date could not be retrieved.'},
+        DOMAIN_NOT_REGISTERED:{t:'Domain registration', d:'Domain is not registered.'},
+        IP_IN_URL:{t:'IP instead of domain', d:'The address is a raw IP, not a domain name.'},
+        AT_SYMBOL:{t:'@ symbol in URL', d:'Everything before @ is treated as a username. The real site is what follows @.'},
+        BRAND_HOMOGRAPH:{t:'Character substitution', d:'Visually identical to a known brand but written with different characters.'},
+        BRAND_TYPOSQUAT:{t:'Typosquatted domain', d:'Differs from a known brand by a couple of characters.'},
+        BRAND_IMPERSONATION:{t:'Brand in foreign domain', d:'A brand name used in a domain the brand does not own.'},
+        BRAND_CLEAN:{t:'Brand impersonation', d:'No brand impersonation detected.'},
+        PUNYCODE:{t:'Punycode (IDN)', d:'Encoded as xn--… and displays differently from how it is written.'},
+        MIXED_SCRIPTS:{t:'Mixed scripts', d:'One domain label mixes alphabets — a substitution marker.'},
+        NON_ASCII_HOST:{t:'Non-ASCII in domain', d:'The domain contains non-Latin characters.'},
+        ENCODED_HOST:{t:'Encoding in domain', d:'Percent-encoding (%XX) used in the host part.'},
+        NON_STANDARD_PORT:{t:'Non-standard port', d:'Web services run on ports 80 and 443.'},
+        INSECURE_SCHEME:{t:'Unencrypted', d:'Uses http:// — data entered is sent in clear text.'},
+        REDIRECT_PARAMS:{t:'Redirect parameters', d:'Parameters like ?url= / ?goto= turn a legitimate site into a springboard.'},
+        EXCESSIVE_SUBDOMAINS:{t:'Many subdomains', d:'The real domain is always the last two parts; the rest is chosen by the owner.'},
+        LONG_URL:{t:'Long address', d:'A long address hides the real domain in the address bar.'},
+        LONG_DOMAIN:{t:'Long domain name', d:'Unusually long domain name.'},
+        EXCESSIVE_HYPHENS:{t:'Many hyphens', d:'Hyphens glue a plausible name out of a brand and keywords.'},
+        TRIGGER_KEYWORDS:{t:'Alarming keywords', d:'Words that create urgency and push you to enter credentials.'},
+        SUSPICIOUS_TLD:{t:'Suspicious zone', d:'This zone is given away free, so it is used en masse for throwaway domains.'},
+        DIGITS_IN_DOMAIN:{t:'Digits in domain', d:'Digits often replace lookalike letters: 0 → o, 1 → l.'},
+        SHORTENER:{t:'Link shortener', d:'A shortening service hides the real address.'},
+        SHORTENER_UNRESOLVED:{t:'Not resolved', d:'This is a shortened link, but the destination could not be determined.'},
+        CROSS_DOMAIN_REDIRECT:{t:'Domain change', d:'The redirect leads to a different domain.'},
+        LONG_REDIRECT_CHAIN:{t:'Long chain', d:'Several redirects in a row — a way to hide the destination.'},
+        TRUSTED_DOMAIN:{t:'Domain reputation', d:'Well-known domain with established reputation.'},
+        HTTPS_OK:{t:'Protocol', d:'Connection is encrypted (HTTPS).'},
+        ASCII_OK:{t:'Characters', d:'Standard Latin characters only.'},
+        TLD_OK:{t:'Zone', d:'Ordinary domain zone.'},
+    },
+};
 
-function applyLang() {
-    const t = T[lang];
-    document.querySelectorAll('[data-i18n]').forEach(el => { const k=el.getAttribute('data-i18n'); if(t[k]!==undefined) el.textContent=t[k]; });
-    document.querySelectorAll('[data-i18n-ph]').forEach(el => { const k=el.getAttribute('data-i18n-ph'); if(t[k]!==undefined) el.placeholder=t[k]; });
-    ['btnRu','btnRuM'].forEach(id => { const el=document.getElementById(id); if(el) el.classList.toggle('active',lang==='ru'); });
-    ['btnEn','btnEnM'].forEach(id => { const el=document.getElementById(id); if(el) el.classList.toggle('active',lang==='en'); });
+let lang = (localStorage.getItem('pg_lang') === 'en') ? 'en' : 'ru';
+const t = () => I18N[lang];
+
+/* ─── 3. Безопасная работа с DOM ──────────────────────────────────── */
+/*
+   Единственный способ, которым текст попадает в документ, — textContent.
+   Он вставляет строку как ТЕКСТОВЫЙ УЗЕЛ: браузер не парсит её как
+   разметку, поэтому «<img onerror=...>» останется видимой строкой.
+   innerHTML в этом файле не используется нигде — именно это и было
+   причиной XSS в предыдущей версии.
+*/
+const $ = (id) => document.getElementById(id);
+
+function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
 }
-function setLang(l) { lang=l; localStorage.setItem('pg_lang',l); applyLang(); }
 
-let menuOpen=false;
-function toggleMenu() { menuOpen=!menuOpen; document.getElementById('mobileMenu').classList.toggle('open',menuOpen); }
-
-function onInputChange() { document.getElementById('clearBtn').classList.toggle('show', document.getElementById('urlInput').value.length>0); }
-function clearInput() {
-    document.getElementById('urlInput').value='';
-    document.getElementById('clearBtn').classList.remove('show');
-    const old=document.getElementById('inlineResult'); if(old) old.remove();
-    document.getElementById('resultPanel').classList.remove('visible');
-    document.getElementById('errorMsg').classList.add('hidden');
-    document.getElementById('urlInput').focus();
+function clear(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
 }
-function setUrl(u) { document.getElementById('urlInput').value=u; onInputChange(); }
 
-const WHITELIST = new Set([
-    'google.com','google.ru','youtube.com','facebook.com','instagram.com',
-    'twitter.com','x.com','wikipedia.org','amazon.com','apple.com',
-    'microsoft.com','github.com','linkedin.com','reddit.com','netflix.com',
-    'twitch.tv','discord.com','telegram.org','vk.com','ok.ru',
-    'yandex.ru','mail.ru','sberbank.ru','tinkoff.ru','tbank.ru',
-    'alfabank.ru','vtb.ru','gosuslugi.ru','mos.ru','nalog.ru',
-    'paypal.com','stripe.com','visa.com','mastercard.com',
-    'openai.com','anthropic.com','onlyfans.com','pornhub.com',
-    'ozon.ru','wildberries.ru','avito.ru','aliexpress.com',
-    'stackoverflow.com','medium.com','wordpress.com','notion.so',
-    'zoom.us','slack.com','figma.com','dropbox.com','trello.com',
-    'steamcommunity.com','epicgames.com','roblox.com','minecraft.net',
-    'whatsapp.com','viber.com','skype.com','signal.org',
-    'kremlin.ru','government.ru','cbr.ru','pfr.gov.ru',
-    'iana.org','icann.org','cloudflare.com','akamai.com',
+/* ─── 4. Нормализация доменов (порт backend/normalize.py) ─────────── */
+
+const HOMOGLYPHS = {
+    'а':'a','б':'b','в':'b','г':'r','д':'d','е':'e','ё':'e','з':'3','и':'u',
+    'к':'k','м':'m','н':'h','о':'o','п':'n','р':'p','с':'c','т':'t','у':'y',
+    'х':'x','ѕ':'s','і':'i','ј':'j','ӏ':'l','ԁ':'d','ԛ':'q','ԝ':'w',
+    'α':'a','β':'b','ε':'e','ι':'i','κ':'k','ν':'v','ο':'o','ρ':'p','τ':'t',
+    'υ':'u','χ':'x','ϲ':'c','ı':'i','ł':'l','ɑ':'a','ɡ':'g',
+};
+const LEET = {'0':'o','1':'l','3':'e','4':'a','5':'s','7':'t','8':'b','9':'g','|':'l','$':'s','!':'i'};
+const SEQUENCES = [['rn','m'],['vv','w'],['cl','d'],['ii','u']];
+
+function foldHomoglyphs(s) {
+    // NFKC разбирает полноширинные и математические варианты латиницы.
+    return s.normalize('NFKC').toLowerCase().replace(/./gu, ch => HOMOGLYPHS[ch] || ch);
+}
+function foldLeet(s) {
+    return s.toLowerCase().replace(/./g, ch => LEET[ch] || ch);
+}
+function canonical(s) {
+    let out = foldLeet(foldHomoglyphs(s));
+    for (const [from, to] of SEQUENCES) out = out.split(from).join(to);
+    return out.replace(/[^a-z0-9]/g, '');
+}
+function hasNonAscii(s) { return /[^\x00-\x7F]/.test(s); }
+
+/*
+   Декодер Punycode (RFC 3492).
+
+   ЗАЧЕМ ОН НУЖЕН ИМЕННО ЗДЕСЬ. Конструктор new URL() приводит
+   интернационализированные домены к ASCII-форме:
+
+       new URL('https://аmazon.com').hostname  →  'xn--mazon-3ve.com'
+
+   То есть кириллическая «а», ради обнаружения которой всё и делается,
+   до анализатора просто не доходит — вместо неё приходит ACE-строка.
+   Поэтому для проверки на гомоглифы имя хоста нужно раскодировать
+   обратно в Unicode. В браузере готового API для этого нет.
+
+   Алгоритм — Bootstring: базовые (ASCII) символы идут как есть до
+   последнего дефиса, остальные закодированы переменной длиной как
+   последовательность «дельт» вставки кодовых точек.
+*/
+function punycodeAdapt(delta, numPoints, firstTime) {
+    delta = firstTime ? Math.floor(delta / 700) : delta >> 1;
+    delta += Math.floor(delta / numPoints);
+    let k = 0;
+    while (delta > 455) { delta = Math.floor(delta / 35); k += 36; }
+    return k + Math.floor(36 * delta / (delta + 38));
+}
+
+function punycodeDecodeLabel(input) {
+    const BASE = 36, TMIN = 1, TMAX = 26;
+    const output = [];
+    let n = 128, i = 0, bias = 72;
+
+    const lastDash = input.lastIndexOf('-');
+    const basicEnd = lastDash > 0 ? lastDash : 0;
+    for (let j = 0; j < basicEnd; j++) {
+        const code = input.charCodeAt(j);
+        if (code > 127) return null;          // базовая часть обязана быть ASCII
+        output.push(code);
+    }
+
+    for (let idx = basicEnd > 0 ? basicEnd + 1 : 0; idx < input.length; ) {
+        const oldi = i;
+        for (let w = 1, k = BASE; ; k += BASE) {
+            if (idx >= input.length) return null;
+            const code = input.charCodeAt(idx++);
+            let digit;
+            if (code >= 0x30 && code <= 0x39)      digit = code - 0x30 + 26;
+            else if (code >= 0x61 && code <= 0x7A) digit = code - 0x61;
+            else if (code >= 0x41 && code <= 0x5A) digit = code - 0x41;
+            else return null;
+            i += digit * w;
+            const t = k <= bias ? TMIN : (k >= bias + TMAX ? TMAX : k - bias);
+            if (digit < t) break;
+            w *= BASE - t;
+            if (w > 0x7FFFFFFF) return null;       // защита от переполнения
+        }
+        const outLen = output.length + 1;
+        bias = punycodeAdapt(i - oldi, outLen, oldi === 0);
+        n += Math.floor(i / outLen);
+        i %= outLen;
+        if (n > 0x10FFFF) return null;
+        output.splice(i, 0, n);
+        i++;
+    }
+
+    try { return String.fromCodePoint.apply(null, output); }
+    catch { return null; }
+}
+
+function decodePunycodeHost(host) {
+    if (!host.includes('xn--')) return host;
+    return host.split('.').map(label => {
+        if (!label.startsWith('xn--')) return label;
+        const decoded = punycodeDecodeLabel(label.slice(4));
+        // Битую ACE-метку оставляем как есть: лучше анализировать
+        // сырую строку, чем уронить проверку.
+        return decoded === null ? label : decoded;
+    }).join('.');
+}
+
+function mixedScripts(label) {
+    // Латиница и кириллица/греческий в одном слове — сильнейший
+    // индикатор гомоглифной атаки. Легитимные домены так не пишут.
+    const latin    = /[a-z]/i.test(label);
+    const cyrillic = /[Ѐ-ӿ]/.test(label);
+    const greek    = /[Ͱ-Ͽ]/.test(label);
+    return (latin && cyrillic) || (latin && greek) || (cyrillic && greek);
+}
+
+function levenshtein(a, b, max) {
+    if (a === b) return 0;
+    if (Math.abs(a.length - b.length) > max) return max + 1;
+    if (a.length > b.length) { const s = a; a = b; b = s; }
+    let prev = Array.from({length: a.length + 1}, (_, i) => i);
+    for (let i = 1; i <= b.length; i++) {
+        const cur = [i];
+        for (let j = 1; j <= a.length; j++) {
+            cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[j-1] === b[i-1] ? 0 : 1));
+        }
+        if (Math.min.apply(null, cur) > max) return max + 1;
+        prev = cur;
+    }
+    return prev[a.length];
+}
+
+/* ─── 5. Разбор домена (мини-версия Public Suffix List) ───────────── */
+/*
+   Раньше «корневой домен» вычислялся как две последние метки:
+       getRootDomain('amazon.co.uk')  →  'co.uk'
+   Поэтому ни один домен в зонах co.uk, com.br, gov.ru не попадал в
+   списки: сравнивалось «co.uk», а не «amazon.co.uk».
+   Полный PSL — это тысячи правил и ~250 КБ, тянуть его в браузер ради
+   резервного режима незачем; бэкенд использует настоящий PSL через
+   tldextract. Здесь — список самых частых составных суффиксов.
+*/
+const MULTI_SUFFIXES = new Set([
+    'co.uk','org.uk','ac.uk','gov.uk','me.uk','net.uk','sch.uk',
+    'com.au','net.au','org.au','edu.au','gov.au',
+    'co.jp','ne.jp','or.jp','ac.jp','go.jp',
+    'com.br','net.br','org.br','gov.br',
+    'com.cn','net.cn','org.cn','gov.cn','edu.cn',
+    'co.in','net.in','org.in','gov.in',
+    'co.nz','net.nz','org.nz','govt.nz',
+    'co.za','org.za','gov.za',
+    'co.kr','or.kr','go.kr',
+    'com.tr','com.mx','com.ar','com.sg','com.hk','com.tw','com.ua','com.pl',
+    'gov.ru','edu.ru','org.ru','net.ru','com.ru','ac.ru','msk.ru','spb.ru',
+    'gov.kz','com.kz','org.kz',
+    'com.ng','com.pk','com.ph','com.vn','co.id','co.th','com.my','com.sa',
+    'github.io','gitlab.io','pages.dev','workers.dev','vercel.app',
+    'netlify.app','herokuapp.com','web.app','firebaseapp.com',
+    'blogspot.com','wordpress.com','s3.amazonaws.com',
 ]);
 
-function getRootDomain(h) { const p=h.split('.'); return p.length>=2?p.slice(-2).join('.'):h; }
+function splitDomain(host) {
+    const parts = host.split('.').filter(Boolean);
+    if (parts.length < 2) return { registered: host, sld: host, tld: '', subs: [] };
+
+    let suffixLen = 1;
+    if (parts.length >= 3 && MULTI_SUFFIXES.has(parts.slice(-2).join('.'))) suffixLen = 2;
+    if (parts.length >= 4 && MULTI_SUFFIXES.has(parts.slice(-3).join('.'))) suffixLen = 3;
+
+    const tld  = parts.slice(-suffixLen).join('.');
+    const sld  = parts[parts.length - suffixLen - 1] || '';
+    const registered = sld ? sld + '.' + tld : tld;
+    const subs = parts.slice(0, Math.max(0, parts.length - suffixLen - 1));
+    return { registered, sld, tld, subs };
+}
+
+/* ─── 6. Справочники (копия backend/data/brands.py) ───────────────── */
+
+const BRANDS = {
+    paypal:['paypal.com','paypal.me','paypalobjects.com'],
+    google:['google.com','google.ru','google.co.uk','google.de','googleapis.com','googleusercontent.com','gstatic.com','youtube.com','youtu.be','goo.gl'],
+    apple:['apple.com','icloud.com','cdn-apple.com'],
+    amazon:['amazon.com','amazon.co.uk','amazon.de','amazon.fr','amazonaws.com','primevideo.com'],
+    facebook:['facebook.com','fb.com','fbcdn.net','messenger.com','meta.com'],
+    microsoft:['microsoft.com','microsoftonline.com','live.com','outlook.com','hotmail.com','office.com','azure.com','windows.com','msn.com','sharepoint.com','xbox.com'],
+    netflix:['netflix.com','nflxvideo.net'],
+    tinkoff:['tinkoff.ru','tbank.ru','tinkoff.com'],
+    sberbank:['sberbank.ru','sber.ru','sberbusiness.ru','sberbank.com'],
+    vtb:['vtb.ru','vtb24.ru','vtb.com'],
+    alfabank:['alfabank.ru','alfa-bank.ru','alfabank.com'],
+    gosuslugi:['gosuslugi.ru','esia.gosuslugi.ru'],
+    telegram:['telegram.org','telegram.me','t.me','telegra.ph'],
+    yandex:['yandex.ru','yandex.com','ya.ru','yandex.net','yandex.kz'],
+    instagram:['instagram.com','cdninstagram.com'],
+    vkontakte:['vk.com','vkontakte.ru','vk.cc','userapi.com'],
+    mailru:['mail.ru','bk.ru','list.ru','inbox.ru','imgsmail.ru'],
+    visa:['visa.com','visa.ru','visa.co.uk'],
+    mastercard:['mastercard.com','mastercard.ru'],
+    gazprom:['gazprom.ru','gazprombank.ru','gazprom.com'],
+    raiffeisen:['raiffeisen.ru','raiffeisen.com'],
+    ozon:['ozon.ru','ozon.com','ozonru.net'],
+    wildberries:['wildberries.ru','wb.ru','wildberries.by'],
+    steam:['steampowered.com','steamcommunity.com'],
+    binance:['binance.com','binance.us'],
+    whatsapp:['whatsapp.com','whatsapp.net','wa.me'],
+    linkedin:['linkedin.com','licdn.com','lnkd.in'],
+    github:['github.com','github.io','githubusercontent.com'],
+    dropbox:['dropbox.com','dropboxusercontent.com'],
+    avito:['avito.ru','avito.st'],
+};
+
+const BRAND_OWNED = new Set(Object.values(BRANDS).flat());
+
+const TRUSTED = new Set([...BRAND_OWNED,
+    'wikipedia.org','wikimedia.org','twitter.com','x.com','reddit.com','twitch.tv',
+    'discord.com','ok.ru','rutube.ru','pinterest.com','tiktok.com','spotify.com',
+    'stackoverflow.com','stackexchange.com','gitlab.com','bitbucket.org','npmjs.com',
+    'pypi.org','docker.com','python.org','mozilla.org','cloudflare.com','akamai.com',
+    'stripe.com','cbr.ru','nalog.ru','nalog.gov.ru','mos.ru','government.ru',
+    'kremlin.ru','pfr.gov.ru','sfr.gov.ru','iana.org','icann.org','ietf.org',
+    'zoom.us','slack.com','figma.com','notion.so','trello.com','atlassian.com',
+    'adobe.com','wordpress.com','medium.com','openai.com','anthropic.com','claude.ai',
+    'epicgames.com','roblox.com','minecraft.net','aliexpress.com','ebay.com',
+    'booking.com','airbnb.com','skype.com','viber.com','signal.org','avito.ru',
+]);
+
+const SHORTENERS = new Set([
+    'bit.ly','t.co','tinyurl.com','goo.gl','is.gd','cutt.ly','shorturl.at',
+    'rebrand.ly','buff.ly','ow.ly','s.id','rb.gy','short.io','lnkd.in','tiny.cc',
+    'clck.ru','vk.cc','qps.ru','u.to','v.gd','t.ly','dub.sh','youtu.be','amzn.to',
+]);
+
+const SUSPICIOUS_TLDS = new Set([
+    'xyz','tk','ml','ga','cf','gq','top','click','loan','work','date','win',
+    'stream','racing','review','party','download','bid','faith','icu','buzz',
+    'cyou','monster','cfd','sbs','bar','hair','skin','boats','wang','men',
+    'rest','quest','beauty','mom','lol','autos','makeup','zip','mov','kim',
+]);
+
+const KEYWORDS = ['login','signin','logon','secure','security','verify','verification',
+    'validate','account','update','confirm','banking','bank','recover','recovery',
+    'password','passwd','credential','wallet','prize','winner','bonus','gift',
+    'suspended','limited','unusual','activity','authenticate','authorize',
+    'reactivate','unlock','billing','invoice','payment','refund','webscr','token','otp'];
+
+// Границы слова «мягкие»: буквы вокруг запрещены, цифры и разделители — нет.
+// Поэтому /secure-login/ и login2.php находятся, а «accountant» — нет.
+const KEYWORD_RE = new RegExp('(?<![a-z])(' + KEYWORDS.slice().sort((a,b)=>b.length-a.length).join('|') + ')(?![a-z])', 'gi');
+
+/* ─── 7. Валидация ввода ──────────────────────────────────────────── */
+
+const MAX_URL_LENGTH = 2048;
 
 function validateUrl(input) {
-    const t = T[lang];
-    const s = input.trim();
-    if (!s || s.length < 4)      return { ok:false, msg: t.err_short };
-    if (/\s/.test(s))            return { ok:false, msg: t.err_space };
-    if (!s.includes('.'))        return { ok:false, msg: t.err_nodot };
+    const s = String(input == null ? '' : input).trim();
+    const T = t();
 
-    let hostname;
-    if (/^https?:\/\//i.test(s)) {
-        try { hostname = new URL(s).hostname; } catch { return {ok:false, msg:t.err_url}; }
-    } else {
-        // Strip path/query for validation
-        hostname = s.split('/')[0].split('?')[0].split('#')[0];
+    if (!s)                  return { ok:false, msg:T.err_empty };
+    if (s.length > MAX_URL_LENGTH) return { ok:false, msg:T.err_long };
+    if (s.length < 4)        return { ok:false, msg:T.err_short };
+    if (/\s/.test(s))        return { ok:false, msg:T.err_space };
+    // Управляющие символы: CRLF в URL — это инъекция в исходящий запрос.
+    if (/[\u0000-\u001F\u007F]/.test(s)) return { ok:false, msg:T.err_chars };
+
+    // Схема: разрешаем только http/https. Раньше проверки схемы не было
+    // вовсе, и «javascript:...» доходил до движка.
+    const schemeMatch = s.match(/^([a-zA-Z][a-zA-Z0-9+.\-]*):/);
+    if (schemeMatch && !/^https?$/i.test(schemeMatch[1])) {
+        return { ok:false, msg:T.err_scheme };
     }
 
-    const parts = hostname.split('.');
-    if (parts.length < 2) return {ok:false, msg:t.err_nodot};
-
-    const tld = parts[parts.length-1];
-    if (!tld || tld.length < 2)  return {ok:false, msg:t.err_tld};  // rejects "go."
-
-    const sld = parts[parts.length-2];
-    if (!sld || sld.length < 1)  return {ok:false, msg:t.err_url};
-
-    // Must be valid hostname chars (allow IDN unicode)
-    if (!/^[a-zA-Z0-9\u0080-\uFFFF.\-\[\]:]+$/.test(hostname)) return {ok:false, msg:t.err_url};
-
-    return {ok:true};
-}
-
-function normalizeUrl(s) { return /^https?:\/\//i.test(s.trim()) ? s.trim() : 'https://'+s.trim(); }
-
-function fetchT(url, opts={}, ms=8000) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(()=>ctrl.abort(), ms);
-    return fetch(url, {...opts, signal:ctrl.signal}).finally(()=>clearTimeout(timer));
-}
-
-// ENGINE 1 — Local heuristics (synchronous, instant)
-
-const SHORT_DOMAINS = new Set([
-    'bit.ly','t.co','tinyurl.com','clck.ru','ow.ly','is.gd','buff.ly',
-    'short.link','tiny.cc','rb.gy','cutt.ly','shorturl.at','goo.gl',
-    't.ly','v.gd','youtu.be','vk.cc','vk.me','qps.ru','u.to',
-]);
-
-function engineLocal(rawUrl) {
-    const t = T[lang];
-    const sigs = []; let score = 0;
-
-    // ── Pre-parse: decode encoded chars ─────────────────────
-    let input = rawUrl.trim();
-    try { input = decodeURIComponent(input); } catch {}
-
-    const norm = normalizeUrl(input);
-    let parsed;
-    try { parsed = new URL(norm); } catch { return null; }
-
-    const host     = parsed.hostname.toLowerCase();
-    const path     = parsed.pathname + parsed.search;
-    const root     = getRootDomain(host);
-    const parts    = host.split('.');
-    const tld      = parts[parts.length-1];
-    const sld      = parts[parts.length-2]||'';
-    const hadProto = /^https?:\/\//i.test(rawUrl.trim());
-    const isHttp   = hadProto && parsed.protocol==='http:';
-
-    // ── 0. @ в URL (http://google.com@evil.com → evil.com) ──
-    // URL class resolves it correctly but user sees fake domain
-    const rawAfterProto = input.replace(/^https?:\/\//i,'');
-    if(rawAfterProto.includes('@')){
-        score += 70;
-        sigs.push({key:'Атака через @', value:`Символ @ в URL скрывает настоящий домен: ${host}`, level:'bad'});
-    }
-
-    // ── 1. Punycode / IDN Homograph ─────────────────────────
-    if(host.includes('xn--')){
-        score += 50;
-        sigs.push({key:'Punycode (IDN)', value:`Интернационализированный домен xn-- — возможная омоглифная атака`, level:'bad'});
-    } else if(/[^\x00-\x7F]/.test(host)){
-        score += 60;
-        sigs.push({key:'IDN-атака', value:'Нестандартные Unicode-символы в домене — омоглифная атака', level:'bad'});
-    } else {
-        sigs.push({key:'Символы', value:'Только ASCII-символы ✓', level:'ok'});
-    }
-
-    // ── 2. Протокол (только если явно http://) ──────────────
-    if(isHttp){ score+=20; sigs.push({key:'Протокол', value:'HTTP — трафик не зашифрован', level:'bad'}); }
-    else { sigs.push({key:'Протокол', value:'HTTPS ✓', level:'ok'}); }
-
-    // ── 3. Короткая ссылка (bit.ly, tinyurl...) ─────────────
-    if(SHORT_DOMAINS.has(root)){
-        score += 15;
-        sigs.push({key:'Короткая ссылка', value:`Сервис ${root} скрывает реальный адрес — не кликайте без проверки`, level:'warn'});
-    }
-
-    // ── 4. Бренд-имперсонация + leet-speak ─────────────────
-    const brands=[
-        {n:'paypal',    ok:['paypal.com','paypal.me']},
-        {n:'google',    ok:['google.com','google.ru','google.co.uk','googleapis.com']},
-        {n:'apple',     ok:['apple.com','icloud.com','appleid.apple.com']},
-        {n:'amazon',    ok:['amazon.com','amazon.co.uk','amazon.de','aws.amazon.com']},
-        {n:'facebook',  ok:['facebook.com','fb.com','messenger.com','meta.com']},
-        {n:'microsoft', ok:['microsoft.com','live.com','outlook.com','hotmail.com','office.com','azure.com']},
-        {n:'netflix',   ok:['netflix.com']},
-        {n:'tinkoff',   ok:['tinkoff.ru','tbank.ru']},
-        {n:'sberbank',  ok:['sberbank.ru','sber.ru','sberbusiness.ru']},
-        {n:'vtb',       ok:['vtb.ru','vtb24.ru']},
-        {n:'alfabank',  ok:['alfabank.ru','alfa-bank.ru']},
-        {n:'gosuslugi', ok:['gosuslugi.ru','esia.gosuslugi.ru']},
-        {n:'telegram',  ok:['telegram.org','t.me','telegram.me','web.telegram.org']},
-        {n:'yandex',    ok:['yandex.ru','yandex.com','ya.ru','mail.yandex.ru']},
-        {n:'instagram', ok:['instagram.com']},
-        {n:'vkontakte', ok:['vk.com','vkontakte.ru','m.vk.com']},
-        {n:'mailru',    ok:['mail.ru','bk.ru','list.ru','inbox.ru']},
-        {n:'visa',      ok:['visa.com','visa.ru']},
-        {n:'mastercard',ok:['mastercard.com','mastercard.ru']},
-        {n:'gazprom',   ok:['gazprom.ru','gazprombank.ru']},
-        {n:'raiffeisen',ok:['raiffeisen.ru','raiffeisendirect.ru']},
-        {n:'ozon',      ok:['ozon.ru','ozon.com']},
-        {n:'wildberries',ok:['wildberries.ru','wb.ru']},
-    ];
-    const leet=host.replace(/0/g,'o').replace(/1/g,'l').replace(/3/g,'e').replace(/4/g,'a').replace(/5/g,'s').replace(/\|/g,'l').replace(/@/g,'a');
-    let brandHit=null;
-    for(const b of brands){
-        if(b.ok.includes(root)||b.ok.includes(host)) continue;
-        // Check in subdomain: paypal.com.evil.ru
-        if(host.includes(b.n)||leet.includes(b.n)){ brandHit=b.n; break; }
-    }
-    if(brandHit){ score+=50; sigs.push({key:'Имперсонация', value:`Имитация бренда «${brandHit}» в чужом домене`, level:'bad'}); }
-
-    // ── 5. Подозрительный TLD ───────────────────────────────
-    const sTlds=['.xyz','.tk','.ml','.ga','.cf','.gq','.top','.click','.loan','.work',
-        '.date','.win','.stream','.racing','.review','.party','.download','.bid','.faith',
-        '.icu','.buzz','.cyou','.monster','.cfd','.sbs','.bar','.hair','.skin','.boats'];
-    if(sTlds.some(x=>host.endsWith(x))){ score+=25; sigs.push({key:'TLD', value:'Подозрительная доменная зона — популярна у мошенников', level:'warn'}); }
-    else { sigs.push({key:'TLD', value:'Стандартная доменная зона ✓', level:'ok'}); }
-
-    // ── 6. Длина SLD (домен второго уровня > 35 символов) ───
-    if(sld.length > 35){
-        score += 20;
-        sigs.push({key:'Длина домена', value:`SLD содержит ${sld.length} символов — аномально длинный`, level:'warn'});
-    }
-
-    // ── 7. Глубокий субдомен (paypal.com.evil.ru → 4 части)─
-    if(parts.length > 3){ score+=20; sigs.push({key:'Субдомены', value:`${parts.length} уровня — известный приём скрытия настоящего домена`, level:'warn'}); }
-
-    // ── 8. IP-адрес вместо домена ────────────────────────────
-    if(/^\d{1,3}(\.\d{1,3}){3}$/.test(host)){ score+=40; sigs.push({key:'IP-адрес', value:'Прямой IP вместо доменного имени', level:'bad'}); }
-
-    // ── 9. Много дефисов в домене ────────────────────────────
-    const dashCount=(host.match(/-/g)||[]).length;
-    if(dashCount>=4){ score+=20; sigs.push({key:'Дефисы', value:`${dashCount} дефиса — нетипично для легитимных доменов`, level:'warn'}); }
-    else if(dashCount>=2){ score+=8; sigs.push({key:'Дефисы', value:`${dashCount} дефиса — умеренно подозрительно`, level:'warn'}); }
-
-    // ── 10. Фишинговые слова в пути ─────────────────────────
-    const kw=['login','signin','secure','verify','account','update','confirm','banking',
-        'password','token','auth','recover','wallet','credential','suspended','unusual',
-        'activity','validate','reactivate','unlock','billing','invoice'];
-    const hits=kw.filter(k=>path.toLowerCase().includes(k));
-    if(hits.length>=2){ score+=20; sigs.push({key:'Ключевые слова', value:`Фишинговые паттерны: ${hits.slice(0,4).join(', ')}`, level:'warn'}); }
-    else if(hits.length===1){ score+=8; sigs.push({key:'Ключевые слова', value:`Подозрительное слово: ${hits[0]}`, level:'warn'}); }
-
-    // ── 11. Параметры редиректа ──────────────────────────────
-    if(/redirect|url=|link=|goto=|forward=|return=/i.test(path)){ score+=20; sigs.push({key:'Редирект', value:'Параметры скрытой переадресации на другой ресурс', level:'warn'}); }
-
-    // ── 12. Длина полного URL ────────────────────────────────
-    const urlLen=input.trim().length;
-    if(urlLen>120){ score+=15; sigs.push({key:'Длина URL', value:`${urlLen} символов — чрезмерно длинный`, level:'warn'}); }
-    else if(urlLen>80){ score+=5; sigs.push({key:'Длина URL', value:`${urlLen} символов — длиннее обычного`, level:'warn'}); }
-    else { sigs.push({key:'Длина URL', value:`${urlLen} симв. ✓`, level:'ok'}); }
-
-    // ── 13. Цифры в теле домена ──────────────────────────────
-    if(/\d/.test(sld)&&!WHITELIST.has(root)){ score+=10; sigs.push({key:'Цифры', value:'Цифры в домене — типичный признак мошеннических сайтов', level:'warn'}); }
-
-    // ── 14. data: / javascript: схема ───────────────────────
-    if(/^(data:|javascript:)/i.test(input)){ score+=100; sigs.push({key:'Схема', value:'Опасная схема (data: или javascript:)', level:'bad'}); }
-
-    // ── 15. Encoded chars в домене (обфускация) ──────────────
-    if(/%[0-9a-f]{2}/i.test(new URL(norm).hostname)){ score+=25; sigs.push({key:'Обфускация', value:'URL-кодирование в домене — попытка скрыть адрес', level:'bad'}); }
-
-    // ── Whitelist override ───────────────────────────────────
-    if(WHITELIST.has(root)){ score=Math.min(score,8); sigs.push({key:'Репутация', value:'Домен входит в список проверенных безопасных сайтов ✓', level:'ok'}); }
-
-    score=Math.min(100,score);
-    return {score, sigs, host, root, norm, isShortUrl: SHORT_DOMAINS.has(root)};
-}
-
-// ENGINE 2 — URLhaus (abuse.ch) — реальная база malware URL
-async function engineUrlhaus(url, host) {
-    const results = [];
+    let url;
     try {
-        const r1 = await fetchT('https://urlhaus-api.abuse.ch/v1/url/', {
-            method:'POST',
-            headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
-            body:'url='+encodeURIComponent(url)
-        }, 8000);
-        if(r1.ok){ const d=await r1.json(); results.push({type:'url', data:d}); }
-    } catch{}
-    try {
-        const r2 = await fetchT('https://urlhaus-api.abuse.ch/v1/host/', {
-            method:'POST',
-            headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
-            body:'host='+encodeURIComponent(host)
-        }, 8000);
-        if(r2.ok){ const d=await r2.json(); results.push({type:'host', data:d}); }
-    } catch{}
-    return results;
+        url = new URL(/^https?:\/\//i.test(s) ? s : 'https://' + s);
+    } catch {
+        return { ok:false, msg:T.err_url };
+    }
+
+    const host = url.hostname;
+    if (!host) return { ok:false, msg:T.err_url };
+
+    // IPv6-литерал в квадратных скобках — валидный хост.
+    if (host.startsWith('[')) return { ok:true, url:url.href };
+
+    const parts = host.split('.');
+    if (parts.length < 2) return { ok:false, msg:T.err_nodot };
+    if (parts.some(p => p.length === 0)) return { ok:false, msg:T.err_url };
+
+    // IPv4-литерал — валидный адрес и при этом сильный признак фишинга,
+    // поэтому проверку «TLD минимум 2 символа» к нему применять нельзя:
+    // у 185.220.101.5 последняя метка это «5».
+    const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+    if (ipv4) {
+        return ipv4.slice(1).every(o => Number(o) <= 255)
+            ? { ok:true, url:url.href }
+            : { ok:false, msg:T.err_url };
+    }
+
+    if (parts[parts.length - 1].length < 2) return { ok:false, msg:T.err_tld };
+
+    return { ok:true, url:url.href };
 }
 
-// ENGINE 3 — RDAP Domain Age (бесплатно, без ключа)
-// Новые домены < 30 дней = высокий риск фишинга
-async function engineRDAP(root) {
-    // Skip for known safe domains
-    if(WHITELIST.has(root)) return null;
-    try {
-        // rdap.org is an RDAP aggregator with CORS support
-        const resp = await fetchT(`https://rdap.org/domain/${encodeURIComponent(root)}`, {
-            headers:{'Accept':'application/json'}
-        }, 7000);
-        if(!resp.ok) return null;
-        const data = await resp.json();
-        // Find registration date in events array
-        const regEvent = data.events?.find(e =>
-            e.eventAction==='registration' || e.eventAction==='created'
-        );
-        if(!regEvent?.eventDate) return null;
-        const regDate = new Date(regEvent.eventDate);
-        if(isNaN(regDate)) return null;
-        const ageDays = Math.floor((Date.now()-regDate.getTime())/(1000*60*60*24));
-        return {ageDays, regDate: regDate.toLocaleDateString('ru-RU')};
-    } catch { return null; }
-}
-// Работает в claude.ai (ключ подставляется автоматически)
-async function engineClaude(url, host, localScore, localSigs) {
-    try {
-        const sigSummary = localSigs.filter(s=>s.level!=='ok').map(s=>`${s.key}: ${s.value}`).join('; ');
-        const resp = await fetchT('https://api.anthropic.com/v1/messages', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({
-                model:'claude-sonnet-4-20250514',
-                max_tokens:600,
-                messages:[{role:'user', content:
-`Ты — аналитик кибербезопасности. Проанализируй эту ссылку на предмет фишинга и вредоносности.
-
-URL: ${url}
-Домен: ${host}
-Риск от эвристики: ${localScore}/100
-Найденные признаки: ${sigSummary||'нет подозрительных признаков'}
-
-Задача:
-1. Есть ли признаки тайпсквоттинга (похожие домены: g00gle, paypa1)?
-2. Имитирует ли домен известный бренд?
-3. Содержит ли путь URL фишинговые паттерны?
-4. Общий вывод — это легитимный сайт, подозрительный или фишинг?
-
-Ответь ТОЛЬКО JSON без markdown:
-{
-  "delta": <число от -15 до +45, насколько скорректировать риск-балл>,
-  "signals": [{"key": "Claude AI", "value": "<конкретная находка на русском>", "level": "<ok|warn|bad>"}],
-  "summary": "<1-2 чётких предложения вывода на русском>"
-}`
-                }]
-            })
-        }, 12000);
-        if(!resp.ok) return null;
-        const data = await resp.json();
-        const text = data.content?.find(b=>b.type==='text')?.text;
-        if(!text) return null;
-        const clean = text.replace(/```json|```/g,'').trim();
-        return JSON.parse(clean);
-    } catch { return null; }
+function normalizeUrl(s) {
+    const v = String(s).trim();
+    return /^https?:\/\//i.test(v) ? v : 'https://' + v;
 }
 
-// Combine results — строим финальный вердикт
-function buildFinalResult(local, urlhausResults, rdapResult, claudeResult) {
-    const t = T[lang];
-    let score = local.score;
-    const sigs = [...local.sigs];
-    const engineTags = [`${t.src_local}: ✓`];
+/* ─── 8. Локальный движок эвристик (офлайн-резерв) ────────────────── */
 
-    // ── URLhaus ──────────────────────────────────────────────
-    let urlhausResponded = false;
-    for(const r of urlhausResults){
-        if(r.type==='url' && r.data){
-            urlhausResponded = true;
-            if(r.data.query_status==='is_available'){
-                const threat = r.data.threat||'malware';
-                score = Math.min(100, score+70);
-                sigs.unshift({key:'URLhaus', value:`🚨 Обнаружен в базе вредоносных URL! Тип угрозы: ${threat}`, level:'bad'});
-                engineTags.push(`${t.src_urlhaus}: ⚠ УГРОЗА`);
-            } else if(r.data.query_status==='no_results'){
-                sigs.push({key:'URLhaus', value:'Не найден в базе вредоносных URL ✓', level:'ok'});
-                engineTags.push(`${t.src_urlhaus}: чисто`);
+function findBrand(host, sld, registered, subs, displayHost, displaySld) {
+    if (BRAND_OWNED.has(registered)) return null;
+
+    // Для поиска гомоглифов сравниваем то, что ВИДИТ пользователь
+    // (раскодированный Unicode), а не ASCII-форму из new URL().
+    const canonSld    = canonical(displaySld || sld);
+    const foldedHost  = foldHomoglyphs(displayHost || host);
+    const homoglyphSld = foldHomoglyphs(displaySld || sld).replace(/[^a-z0-9]/g, '');
+    const obfuscated  = hasNonAscii(displayHost || host) || host.includes('xn--');
+
+    for (const [brand, owned] of Object.entries(BRANDS)) {
+        if (owned.includes(registered)) return null;
+
+        if (obfuscated && homoglyphSld === brand) {
+            return { brand, kind:'homograph' };
+        }
+        if (brand.length >= 4) {
+            const max = brand.length <= 4 ? 0 : (brand.length <= 6 ? 1 : 2);
+            const dist = levenshtein(canonSld, brand, max);
+            if (dist <= max) {
+                return { brand, kind: (dist > 0 || canonSld !== sld) ? 'typosquat' : 'impersonation' };
             }
         }
-        if(r.type==='host' && r.data && r.data.query_status==='is_host'){
-            const cnt = r.data.urls_count||'?';
-            score = Math.min(100, score+45);
-            sigs.unshift({key:'URLhaus хост', value:`🚨 Хост распространял вредоносные URL (${cnt} случаев)`, level:'bad'});
-        } else if(r.type==='host' && r.data && r.data.query_status==='no_results'){
-            sigs.push({key:'URLhaus хост', value:'Хост не числится в базе угроз ✓', level:'ok'});
+        if (subs.includes(brand)) return { brand, kind:'impersonation' };
+        if (brand.length >= 5 && (canonSld.includes(brand) || foldedHost.includes(brand))) {
+            return { brand, kind:'impersonation' };
         }
     }
-    if(!urlhausResponded && urlhausResults.length===0){
-        engineTags.push(`${t.src_urlhaus}: недоступен`);
+    return null;
+}
+
+function engineLocal(rawInput) {
+    let parsed;
+    try { parsed = new URL(normalizeUrl(rawInput)); } catch { return null; }
+
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname + parsed.search;
+    const { registered, sld, tld, subs } = splitDomain(host);
+    const isTrusted = TRUSTED.has(registered);
+
+    // «Отображаемый» хост — то, что видит жертва в адресной строке.
+    // Для xn--… доменов он отличается от host и только по нему можно
+    // обнаружить подмену символов.
+    const displayHost = decodePunycodeHost(host);
+    const displaySld  = displayHost === host ? sld : splitDomain(displayHost).sld;
+
+    const signals = [];
+    let score = 0;
+    const add = (code, severity, weight, extra) => {
+        score += weight;
+        signals.push({ code, severity, weight, extra: extra || '' });
+    };
+    const ok = (code, extra) => signals.push({ code, severity:'ok', weight:0, extra: extra || '' });
+
+    // @ в адресе. URL уже разобрал его правильно, но пользователь
+    // видит в строке то, что стоит ДО @.
+    if (parsed.username || parsed.password) {
+        add('AT_SYMBOL', 'danger', W.at_symbol, host);
     }
 
-    // ── RDAP Domain Age ───────────────────────────────────────
-    if(rdapResult){
-        const {ageDays, regDate} = rdapResult;
-        if(ageDays < 7){
-            score = Math.min(100, score+60);
-            sigs.unshift({key:'Возраст домена', value:`🚨 Домен зарегистрирован ${regDate} — всего ${ageDays} дней! Крайне подозрительно.`, level:'bad'});
-            engineTags.push(`RDAP: ${ageDays} дн.`);
-        } else if(ageDays < 30){
-            score = Math.min(100, score+40);
-            sigs.unshift({key:'Возраст домена', value:`⚠ Домен зарегистрирован ${regDate} — ${ageDays} дней (менее месяца). 90% новых фишинг-доменов < 30 дней.`, level:'bad'});
-            engineTags.push(`RDAP: ${ageDays} дн.`);
-        } else if(ageDays < 180){
-            score = Math.min(100, score+15);
-            sigs.push({key:'Возраст домена', value:`Домен создан ${regDate} — ${ageDays} дней (менее 6 мес.)`, level:'warn'});
-            engineTags.push(`RDAP: ${ageDays} дн.`);
-        } else {
-            const years = (ageDays/365).toFixed(1);
-            sigs.push({key:'Возраст домена', value:`Домен создан ${regDate} — ${years} лет. Зрелый домен ✓`, level:'ok'});
-            engineTags.push(`RDAP: ${years} лет`);
+    // IP вместо домена (v4 с проверкой октетов, и v6 в скобках).
+    const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    const isIp = (ipv4 && ipv4.slice(1).every(o => Number(o) <= 255)) || host.startsWith('[');
+    if (isIp) add('IP_IN_URL', 'danger', W.ip_in_url, host);
+
+    // Имперсонация бренда.
+    const brand = isIp ? null : findBrand(host, sld, registered, subs, displayHost, displaySld);
+    if (brand) {
+        if (brand.kind === 'homograph')      add('BRAND_HOMOGRAPH', 'danger', W.brand_homograph, brand.brand);
+        else if (brand.kind === 'typosquat') add('BRAND_TYPOSQUAT', 'danger', W.brand_typosquat, brand.brand);
+        else                                 add('BRAND_IMPERSONATION', 'danger', W.brand_impersonation, brand.brand);
+    } else if (!isTrusted && !isIp) {
+        ok('BRAND_CLEAN');
+    }
+
+    // Punycode и смешение алфавитов.
+    if (host.includes('xn--') && !(brand && brand.kind === 'homograph')) {
+        add('PUNYCODE', 'warn', W.punycode, host + ' \u2192 ' + displayHost);
+    }
+    if (displayHost.split('.').some(mixedScripts)) {
+        add('MIXED_SCRIPTS', 'danger', W.mixed_scripts, displayHost);
+    } else if (hasNonAscii(displayHost)) {
+        add('NON_ASCII_HOST', 'warn', W.non_ascii_host, displayHost);
+    } else if (!isIp) {
+        ok('ASCII_OK');
+    }
+
+    // Процентное кодирование в доменной части — ищем в СЫРОМ вводе,
+    // до того как URL его раскодирует (иначе искать уже нечего).
+    const rawHostPart = String(rawInput).replace(/^https?:\/\//i, '').split(/[/?#]/)[0];
+    if (/%[0-9a-f]{2}/i.test(rawHostPart)) {
+        add('ENCODED_HOST', 'warn', W.encoded_host, '');
+    }
+
+    // Порт и схема.
+    if (parsed.port && parsed.port !== '80' && parsed.port !== '443') {
+        add('NON_STANDARD_PORT', 'warn', W.non_standard_port, ':' + parsed.port);
+    }
+    // http:// считаем небезопасным только когда пользователь указал его явно:
+    // для «example.com» мы просто не знаем протокол.
+    if (/^http:\/\//i.test(String(rawInput).trim())) {
+        add('INSECURE_SCHEME', 'warn', W.insecure_scheme, '');
+    } else if (/^https:\/\//i.test(String(rawInput).trim())) {
+        ok('HTTPS_OK');
+    }
+
+    // Сокращатель.
+    if (SHORTENERS.has(registered)) {
+        add('SHORTENER', 'warn', W.shortener, registered);
+    }
+
+    // Зона.
+    if (SUSPICIOUS_TLDS.has(tld.split('.').pop())) {
+        add('SUSPICIOUS_TLD', 'warn', W.suspicious_tld, '.' + tld);
+    } else if (tld) {
+        ok('TLD_OK', '.' + tld);
+    }
+
+    // Структурные аномалии.
+    const meaningfulSubs = subs.filter(s => s !== 'www');
+    if (meaningfulSubs.length > 3) add('EXCESSIVE_SUBDOMAINS', 'warn', W.excessive_subdomains, meaningfulSubs.length);
+    if (sld.length > 35)           add('LONG_DOMAIN', 'info', W.long_domain, sld.length);
+
+    const hyphens = (host.match(/-/g) || []).length;
+    if (hyphens > 3)               add('EXCESSIVE_HYPHENS', 'warn', W.excessive_hyphens, hyphens);
+
+    const urlLen = String(rawInput).trim().length;
+    if (urlLen > 100)              add('LONG_URL', 'info', W.long_url, urlLen);
+
+    if (/[?&](url|redirect|redirect_uri|goto|go|link|forward|return|next|redir|dest|destination|continue|target)=/i.test(parsed.search)) {
+        add('REDIRECT_PARAMS', 'warn', W.redirect_params, '');
+    }
+
+    // Ключевые слова — не ищем на доверенных доменах: /account/login
+    // на google.com это нормальная страница входа.
+    if (!isTrusted) {
+        KEYWORD_RE.lastIndex = 0;
+        const found = [...new Set((path + ' ' + host).toLowerCase().match(KEYWORD_RE) || [])].sort();
+        if (found.length) {
+            const many = found.length >= 2;
+            add('TRIGGER_KEYWORDS', many ? 'warn' : 'info',
+                many ? W.trigger_keywords_many : W.trigger_keywords, found.slice(0, 6).join(', '));
         }
-    } else {
-        engineTags.push('RDAP: недоступен');
+        if (/\d/.test(sld)) add('DIGITS_IN_DOMAIN', 'info', W.digits_in_domain, '');
     }
 
-    // ── Claude AI ────────────────────────────────────────────
-    if(claudeResult){
-        score = Math.min(100, Math.max(0, score+(claudeResult.delta||0)));
-        if(claudeResult.signals?.length) sigs.push(...claudeResult.signals);
-        if(claudeResult.summary){
-            const lvl = score>=55?'bad':score>=20?'warn':'ok';
-            sigs.push({key:'Claude AI', value:`🧠 ${claudeResult.summary}`, level:lvl});
-        }
-        engineTags.push(`${t.src_claude}: ✓`);
+    // Потолок доверия — то же правило, что и в backend/pipeline/scorer.py.
+    if (isTrusted) {
+        score = Math.min(score, TRUSTED_SCORE_CAP);
+        ok('TRUSTED_DOMAIN', registered);
     }
 
-    score = Math.min(100, score);
-    let verdict, level;
-    if(score<20)       {verdict=t.v_safe;   level='safe';}
-    else if(score<55)  {verdict=t.v_susp;   level='suspicious';}
-    else               {verdict=t.v_danger; level='danger';}
+    score = Math.max(0, Math.min(100, score));
+    signals.sort((a, b) => b.weight - a.weight || a.code.localeCompare(b.code));
 
-    return {score, verdict, level, sigs, host:local.host, engineTags};
+    return {
+        score,
+        verdict: verdictOf(score),
+        level: levelOf(score),
+        signals,
+        host,
+        // Локальный режим видит только структуру: из четырёх источников
+        // доступен один. Честно показываем это пользователю.
+        confidence: 0.25,
+        offline: true,
+    };
 }
 
-function setProgress(pct, text){
-    document.getElementById('progressFill').style.width=pct+'%';
-    document.getElementById('loadingText').textContent=text;
+function levelOf(score) {
+    if (score >= THRESHOLD_PHISHING)   return 'danger';
+    if (score >= THRESHOLD_SUSPICIOUS) return 'suspicious';
+    return 'safe';
+}
+function verdictOf(score) {
+    const T = t();
+    if (score >= THRESHOLD_PHISHING)   return T.v_danger;
+    if (score >= THRESHOLD_SUSPICIOUS) return T.v_susp;
+    return T.v_safe;
 }
 
-function renderResult(res) {
-    const circum=213.6;
-    const colors ={safe:'#22c55e',suspicious:'#f59e0b',danger:'#ef4444'};
-    const textCls ={safe:'text-green-400',suspicious:'text-amber-400',danger:'text-red-400'};
-    const borderCls={safe:'border-green-500/40',suspicious:'border-amber-500/40',danger:'border-red-500/40'};
-    const dotCls  ={ok:'bg-green-400 shadow-[0_0_6px_#22c55e]',warn:'bg-amber-400 shadow-[0_0_6px_#f59e0b]',bad:'bg-red-400 shadow-[0_0_6px_#ef4444]'};
-    const circle=document.getElementById('scoreCircle');
-    circle.setAttribute('stroke',colors[res.level]);
-    document.getElementById('scoreNum').textContent=res.score;
-    setTimeout(()=>{ circle.style.strokeDashoffset=circum-(res.score/100)*circum; },100);
-    const vc=document.getElementById('verdictCard');
-    vc.className=`glass rounded-3xl p-6 flex items-center gap-6 border ${borderCls[res.level]}`;
-    const vl=document.getElementById('verdictLabel');
-    vl.className=`text-lg md:text-2xl font-extrabold tracking-wide break-words ${textCls[res.level]}`;
-    vl.textContent=res.verdict;
-    document.getElementById('verdictUrl').textContent=res.host;
-    let engHtml='';
-    if(res.engineTags && res.engineTags.length){
-        engHtml=`<div class="flex flex-wrap gap-2 mt-2">${res.engineTags.map(e=>`<span class="text-[10px] mono px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400">${e}</span>`).join('')}</div>`;
+/* ─── 9. Клиент бэкенда ───────────────────────────────────────────── */
+
+async function fetchWithTimeout(url, options, ms) {
+    // AbortController — единственный способ прервать fetch. Раньше
+    // основной запрос к бэкенду шёл вообще без таймаута, и при
+    // «спящем» сервере кнопка оставалась заблокированной навсегда.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+        return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+    } finally {
+        clearTimeout(timer);
     }
-    document.getElementById('verdictUrl').insertAdjacentHTML('afterend',engHtml);
-    document.getElementById('signalsGrid').innerHTML=res.sigs.map(s=>`
-        <div class="glass rounded-2xl px-5 py-4 flex items-start gap-3">
-            <span class="mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${dotCls[s.level]}"></span>
-            <div><p class="text-[10px] mono tracking-widest text-slate-500 uppercase mb-0.5">${s.key}</p><p class="text-sm text-slate-200">${s.value}</p></div>
-        </div>`).join('');
-    const panel=document.getElementById('resultPanel');
-    panel.classList.add('visible');
-    panel.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
-function showInlineResult(url, status, level){
-    const cls={safe:'bg-emerald-500/20 text-emerald-400 border-emerald-500/50',suspicious:'bg-amber-500/20 text-amber-400 border-amber-500/50',danger:'bg-red-500/20 text-red-400 border-red-500/50'};
-    const old=document.getElementById('inlineResult'); if(old) old.remove();
-    const div=document.createElement('div');
-    div.id='inlineResult';
-    div.className=`mt-4 px-5 py-3 rounded-xl border mono text-sm ${cls[level]||cls.danger}`;
-    div.innerHTML=`<div class="flex justify-between items-center gap-4"><span class="truncate opacity-70 text-xs">TARGET: ${url}</span><span class="font-bold flex-shrink-0">[ ${status} ]</span></div>`;
-    document.getElementById('loadingBar').insertAdjacentElement('afterend',div);
+async function scanViaBackend(url) {
+    const resp = await fetchWithTimeout(BACKEND_URL + '/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+    }, BACKEND_TIMEOUT_MS);
+
+    if (resp.status === 429) {
+        const retry = resp.headers.get('Retry-After') || '60';
+        throw new Error('RATE_LIMIT:' + retry);
+    }
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
+    const data = await resp.json();
+    return backendToResult(data);
 }
 
-const BACKEND_URL = 'https://phishguard-ayrt.onrender.com';
+function backendToResult(data) {
+    const score = Number(data.risk_score) || 0;
+    // Уровень берём из вердикта сервера, а не пересчитываем из балла:
+    // пороги живут в одном месте — в конфиге бэкенда.
+    const level = data.verdict === 'PHISHING' ? 'danger'
+                : data.verdict === 'SUSPICIOUS' ? 'suspicious' : 'safe';
 
-const _cache = new Map();
-const CACHE_TTL = 24 * 60 * 60 * 1000;
+    const signals = (data.signals || []).map(s => ({
+        code: s.code,
+        severity: s.severity,
+        weight: s.weight || 0,
+        // В русском режиме показываем подробный текст сервера (в нём
+        // конкретика: числа, домены). В английском — обобщённое
+        // описание из словаря, потому что сервер отвечает по-русски.
+        serverDetail: s.detail,
+        serverTitle: s.title,
+        extra: '',
+    }));
 
-function cacheGet(key) {
-    const entry = _cache.get(key);
-    if (!entry) return null;
-    if (Date.now() - entry.ts > CACHE_TTL) { _cache.delete(key); return null; }
+    return {
+        score,
+        verdict: verdictOf(score),
+        level,
+        signals,
+        host: safeHost(data.scanned_url || data.url),
+        confidence: typeof data.confidence === 'number' ? data.confidence : null,
+        redirects: data.redirects || null,
+        cached: !!data.cached,
+        elapsedMs: data.elapsed_ms || 0,
+        raw: data,
+        offline: false,
+    };
+}
+
+function safeHost(u) {
+    try { return new URL(u).hostname; } catch { return String(u || ''); }
+}
+
+/* ─── 10. Кеш результатов ─────────────────────────────────────────── */
+/*
+   Раньше кеш был обычным Map в памяти: он терялся при перезагрузке,
+   а ключом был сырой ввод, поэтому «google.com» и «https://google.com»
+   считались разными адресами. TTL был сутки — слишком много для
+   проверки угроз: домен, чистый вчера, сегодня может быть в блоклисте.
+*/
+function cacheKey(url) {
+    try {
+        const u = new URL(normalizeUrl(url));
+        return (u.protocol + '//' + u.hostname + u.pathname + u.search).toLowerCase();
+    } catch {
+        return String(url).trim().toLowerCase();
+    }
+}
+
+function cacheRead() {
+    try { return JSON.parse(localStorage.getItem(CACHE_KEY) || '{}'); }
+    catch { return {}; }
+}
+
+function cacheGet(url) {
+    const store = cacheRead();
+    const entry = store[cacheKey(url)];
+    if (!entry || Date.now() - entry.ts > CACHE_TTL_MS) return null;
     return entry.val;
 }
-function cacheSet(key, val) { _cache.set(key, { val, ts: Date.now() }); }
 
-function backendResponseToResult(data, raw) {
-    const t = T[lang];
-    const verdictMap = {
-        'PHISHING':   { verdict: t.v_danger, level: 'danger' },
-        'SUSPICIOUS': { verdict: t.v_susp,   level: 'suspicious' },
-        'SAFE':       { verdict: t.v_safe,   level: 'safe' },
-    };
-    const { verdict, level } = verdictMap[data.verdict] || verdictMap['SAFE'];
-    const sigs = (data.reasons || []).map(reason => {
-        const lvl = reason.includes('🚨') ? 'bad' : reason.includes('⚠') ? 'warn' : 'ok';
-        const key = lvl === 'bad' ? 'Угроза' : lvl === 'warn' ? 'Подозрение' : 'Проверка';
-        return { key, value: reason, level: lvl };
-    });
-    const engineTags = ['Python Backend ✓'];
-    if (data.details?.threat_intel?.checked) {
-        engineTags.push(data.details.threat_intel.is_threat ? 'Google SafeBrowsing: ⚠ УГРОЗА' : 'Google SafeBrowsing: чисто');
+function cacheSet(url, value) {
+    try {
+        const store = cacheRead();
+        store[cacheKey(url)] = { val: value, ts: Date.now() };
+        // Ограничиваем размер: localStorage ~5 МБ на домен, и заполнить
+        // его целиком означает сломать сохранение языка.
+        const keys = Object.keys(store);
+        if (keys.length > CACHE_MAX) {
+            keys.sort((a, b) => store[a].ts - store[b].ts)
+                .slice(0, keys.length - CACHE_MAX)
+                .forEach(k => delete store[k]);
+        }
+        localStorage.setItem(CACHE_KEY, JSON.stringify(store));
+    } catch {
+        // Приватный режим или переполнение — кеш не критичен, работаем без него.
     }
-    if (data.details?.whois?.checked && data.details.whois.age_days !== null) {
-        engineTags.push(`WHOIS: ${data.details.whois.age_days} дн.`);
-    }
-    engineTags.push('Эвристика: ✓');
-    let host = raw;
-    try { host = new URL(BACKEND_URL ? data.url : ('https://'+raw.replace(/^https?:\/\//,''))).hostname; } catch {}
-    return { score: data.risk_score, verdict, level, sigs, host, engineTags };
 }
 
+/* ─── 11. Отрисовка ───────────────────────────────────────────────── */
+
+const CIRCUMFERENCE = 213.6;
+const COLORS  = { safe:'#22c55e', suspicious:'#f59e0b', danger:'#ef4444' };
+const TEXT_CLS = { safe:'text-green-400', suspicious:'text-amber-400', danger:'text-red-400' };
+const BORDER_CLS = { safe:'border-green-500/40', suspicious:'border-amber-500/40', danger:'border-red-500/40' };
+const DOT_CLS = {
+    ok:'bg-green-400 shadow-[0_0_6px_#22c55e]',
+    info:'bg-sky-400 shadow-[0_0_6px_#38bdf8]',
+    warn:'bg-amber-400 shadow-[0_0_6px_#f59e0b]',
+    danger:'bg-red-400 shadow-[0_0_6px_#ef4444]',
+};
+
+function signalText(sig) {
+    const dict = SIG[lang][sig.code];
+    const title = dict ? dict.t : (sig.serverTitle || sig.code);
+    let detail;
+    if (lang === 'ru' && sig.serverDetail) {
+        detail = sig.serverDetail;                    // подробный текст сервера
+    } else if (dict) {
+        detail = dict.d;                              // обобщённое описание
+        if (sig.extra) detail += '  [' + sig.extra + ']';
+    } else {
+        detail = sig.serverDetail || sig.code;
+    }
+    return { title, detail };
+}
+
+function renderSignals(container, signals) {
+    clear(container);
+    for (const sig of signals) {
+        const { title, detail } = signalText(sig);
+
+        const card = el('div', 'glass rounded-2xl px-5 py-4 flex items-start gap-3');
+        card.appendChild(el('span',
+            'mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ' + (DOT_CLS[sig.severity] || DOT_CLS.info)));
+
+        const body = el('div', 'min-w-0');
+        const head = el('div', 'flex items-baseline gap-2');
+        head.appendChild(el('p', 'text-[10px] mono tracking-widest text-slate-500 uppercase mb-0.5', title));
+        if (sig.weight > 0) {
+            head.appendChild(el('span', 'text-[10px] mono text-slate-600', '+' + sig.weight));
+        }
+        body.appendChild(head);
+        // textContent — данные никогда не парсятся как разметка.
+        body.appendChild(el('p', 'text-sm text-slate-200 break-words', detail));
+        card.appendChild(body);
+        container.appendChild(card);
+    }
+}
+
+function renderRedirects(redirects) {
+    const card = $('redirectCard');
+    const list = $('redirectChain');
+    clear(list);
+
+    if (!redirects || !Array.isArray(redirects.chain) || redirects.chain.length < 2) {
+        card.classList.add('hidden');
+        return;
+    }
+    for (const hop of redirects.chain) {
+        list.appendChild(el('li', 'chain-item text-slate-300', hop));
+    }
+    if (redirects.error) {
+        list.appendChild(el('li', 'chain-item text-amber-400', redirects.error));
+    }
+    card.classList.remove('hidden');
+}
+
+function renderEngineTags(result) {
+    const box = $('engineTags');
+    clear(box);
+    const T = t();
+    const tags = [];
+
+    if (result.offline) {
+        tags.push(T.tag_offline);
+        tags.push(T.tag_local);
+    } else {
+        tags.push(T.tag_backend);
+        const d = result.raw && result.raw.details;
+        if (d && d.threat_intel && d.threat_intel.checked) {
+            tags.push('Safe Browsing: ' + (d.threat_intel.is_threat ? '⚠' : 'ok'));
+        }
+        if (d && d.reputation && d.reputation.checked) {
+            tags.push('URLhaus: ' + ((d.reputation.url_listed || d.reputation.host_listed) ? '⚠' : 'ok'));
+        }
+        if (d && d.domain_age && d.domain_age.age_days != null) {
+            tags.push('RDAP: ' + d.domain_age.age_days + ' d');
+        }
+        if (result.elapsedMs) tags.push(result.elapsedMs + ' ms');
+    }
+    if (result.confidence != null) {
+        tags.push(T.conf + ' ' + Math.round(result.confidence * 100) + '%');
+    }
+    if (result.cached) tags.push(T.tag_cached);
+
+    for (const text of tags) {
+        box.appendChild(el('span',
+            'text-[10px] mono px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400', text));
+    }
+}
+
+function renderResult(result) {
+    const circle = $('scoreCircle');
+    circle.setAttribute('stroke', COLORS[result.level]);
+    $('scoreNum').textContent = result.score;
+    // Небольшая задержка, чтобы CSS-переход сработал от текущего значения.
+    setTimeout(() => {
+        circle.style.strokeDashoffset = CIRCUMFERENCE - (result.score / 100) * CIRCUMFERENCE;
+    }, 60);
+
+    $('verdictCard').className =
+        'glass rounded-3xl p-6 flex items-center gap-6 border ' + BORDER_CLS[result.level];
+
+    const label = $('verdictLabel');
+    label.className = 'text-lg md:text-2xl font-extrabold tracking-wide break-words ' + TEXT_CLS[result.level];
+    label.textContent = result.verdict;
+    $('verdictUrl').textContent = result.host;
+
+    renderEngineTags(result);
+    renderRedirects(result.redirects);
+    renderSignals($('signalsGrid'), result.signals);
+
+    const rawBox = $('rawDetails');
+    if (result.raw) {
+        $('rawJson').textContent = JSON.stringify(result.raw, null, 2);
+        rawBox.classList.remove('hidden');
+    } else {
+        rawBox.classList.add('hidden');
+    }
+
+    const panel = $('resultPanel');
+    panel.classList.add('visible');
+    panel.scrollIntoView({ behavior:'smooth', block:'start' });
+}
+
+function showInline(url, status, level) {
+    const classes = {
+        safe:'bg-emerald-500/20 text-emerald-400 border-emerald-500/50',
+        suspicious:'bg-amber-500/20 text-amber-400 border-amber-500/50',
+        danger:'bg-red-500/20 text-red-400 border-red-500/50',
+    };
+    const slot = $('inlineSlot');
+    clear(slot);
+
+    const box = el('div', 'mt-4 px-5 py-3 rounded-xl border mono text-sm ' + (classes[level] || classes.danger));
+    const row = el('div', 'flex justify-between items-center gap-4');
+    // ЗДЕСЬ БЫЛ XSS: раньше эта строка собиралась как innerHTML вместе с
+    // сырым пользовательским вводом. textContent исключает это по природе.
+    row.appendChild(el('span', 'truncate opacity-70 text-xs', 'TARGET: ' + url));
+    row.appendChild(el('span', 'font-bold flex-shrink-0', '[ ' + status + ' ]'));
+    box.appendChild(row);
+    slot.appendChild(box);
+}
+
+function setProgress(percent, text) {
+    $('progressFill').style.width = percent + '%';
+    $('loadingText').textContent = text;
+}
+
+function showError(message) {
+    const box = $('errorMsg');
+    box.textContent = '⚠ ' + message;
+    box.classList.remove('hidden');
+}
+
+/* ─── 12. Оркестрация скана ───────────────────────────────────────── */
+
+let isScanning = false;   // защита от параллельных запусков по Enter
+
 async function startScan() {
-    const t = T[lang];
-    const raw = document.getElementById('urlInput').value.trim();
-    if(!raw){ alert(t.alert_empty); return; }
+    if (isScanning) return;
 
-    const errEl = document.getElementById('errorMsg');
-    errEl.classList.add('hidden');
+    const input = $('urlInput');
+    const raw = input.value.trim();
+    const T = t();
 
-    const vld = validateUrl(raw);
-    if(!vld.ok){ errEl.textContent='⚠ '+vld.msg; errEl.classList.remove('hidden'); return; }
+    $('errorMsg').classList.add('hidden');
 
-    const btn   = document.getElementById('scanBtn');
-    const bar   = document.getElementById('loadingBar');
-    const panel = document.getElementById('resultPanel');
+    const validation = validateUrl(raw);
+    if (!validation.ok) { showError(validation.msg); return; }
 
-    const cached = cacheGet(raw);
+    const normalized = validation.url;
+
+    // Кеш.
+    const cached = cacheGet(normalized);
     if (cached) {
-        panel.classList.remove('visible');
-        const oldTags = document.querySelector('#verdictUrl + div');
-        if(oldTags) oldTags.remove();
-        showInlineResult(raw, cached.verdict, cached.level);
-        renderResult(cached);
+        const result = Object.assign({}, cached, { cached:true, verdict:verdictOf(cached.score) });
+        showInline(raw, result.verdict, result.level);
+        renderResult(result);
         return;
     }
 
-    btn.disabled=true;
-    btn.innerHTML='<span class="inline-block animate-spin mr-1">↻</span>...';
+    isScanning = true;
+    const button = $('scanBtn');
+    const bar = $('loadingBar');
+    button.disabled = true;
+    button.textContent = '...';
     bar.classList.remove('hidden');
-    panel.classList.remove('visible');
-    const oldTags = document.querySelector('#verdictUrl + div');
-    if(oldTags) oldTags.remove();
+    $('resultPanel').classList.remove('visible');
 
-    if (BACKEND_URL) {
-        setProgress(20, '🔌 Подключение к серверу...');
-        try {
-            setProgress(50, '🔬 Полный анализ (GSB + WHOIS + AI)...');
-            const resp = await fetch(`${BACKEND_URL}/scan`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: raw })
-            });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = await resp.json();
-            setProgress(100, '✅ Готово');
-            await new Promise(r => setTimeout(r, 150));
+    let result = null;
+    try {
+        setProgress(20, T.step_connect);
+        setProgress(55, T.step_analyze);
+        result = await scanViaBackend(normalized);
+        setProgress(100, T.step_done);
+    } catch (err) {
+        const message = String(err && err.message || err);
+        if (message.startsWith('RATE_LIMIT:')) {
+            // Осмысленное сообщение вместо молчаливого перехода в резерв.
+            showError(lang === 'ru'
+                ? 'Слишком много запросов. Повторите через ' + message.split(':')[1] + ' с.'
+                : 'Too many requests. Retry in ' + message.split(':')[1] + ' s.');
             bar.classList.add('hidden');
-            btn.disabled=false;
-            btn.textContent=t.btn_scan;
-            const final = backendResponseToResult(data, raw);
-            cacheSet(raw, final);
-            showInlineResult(raw, final.verdict, final.level);
-            renderResult(final);
+            button.disabled = false;
+            button.textContent = T.btn_scan;
+            isScanning = false;
             return;
-        } catch {}
+        }
+        // Сервер недоступен — переходим в локальный режим, но честно
+        // сообщаем об этом в тегах результата.
+        setProgress(70, T.step_local);
+        result = engineLocal(normalized);
+        setProgress(100, T.step_done);
     }
 
-    setProgress(15, t.steps[0]);
-    const local = engineLocal(raw);
-    if(!local){
-        bar.classList.add('hidden'); btn.disabled=false; btn.textContent=t.btn_scan;
-        errEl.textContent='⚠ '+t.err_url; errEl.classList.remove('hidden'); return;
-    }
-
-    const norm = local.norm;
-    const isWhitelisted = WHITELIST.has(local.root);
-
-    setProgress(30, t.steps[1]);
-
-    let urlhausData = [], rdapData = null, claudeData = null;
-
-    if (!isWhitelisted) {
-        setProgress(50, t.steps[2]);
-        const shouldSkipClaude = local.score >= 90;
-        const tasks = [
-            engineUrlhaus(norm, local.host),
-            engineRDAP(local.root),
-            shouldSkipClaude ? Promise.resolve(null) : engineClaude(norm, local.host, local.score, local.sigs)
-        ];
-        const [uhRes, rdapRes, claudeRes] = await Promise.allSettled(tasks);
-        urlhausData = uhRes.status==='fulfilled' ? (uhRes.value||[]) : [];
-        rdapData    = rdapRes.status==='fulfilled' ? rdapRes.value : null;
-        claudeData  = claudeRes.status==='fulfilled' ? claudeRes.value : null;
-    }
-
-    setProgress(100, t.steps[3]);
-    await new Promise(r=>setTimeout(r,150));
     bar.classList.add('hidden');
-    btn.disabled=false;
-    btn.textContent=t.btn_scan;
+    button.disabled = false;
+    button.textContent = T.btn_scan;
+    isScanning = false;
 
-    const final = buildFinalResult(local, urlhausData, rdapData, claudeData);
-    cacheSet(raw, final);
-    showInlineResult(raw, final.verdict, final.level);
-    renderResult(final);
+    if (!result) { showError(T.err_url); return; }
+
+    cacheSet(normalized, result);
+    showInline(raw, result.verdict, result.level);
+    renderResult(result);
 }
+
+/* ─── 13. Интерфейс: язык, меню, поле ввода ───────────────────────── */
+
+const SAMPLES = [
+    { url:'https://paypa1.com/secure-login',                       label:'paypa1.com' },
+    { url:'https://bank-of-america.secure-login.xyz/verify',       label:'bank-of-america.secure-login.xyz' },
+    { url:'https://google.com',                                    label:'google.com ✓' },
+    { url:'https://аmazon.com/login',                         label:{ ru:'amazon.com (кириллица)', en:'amazon.com (cyrillic)' } },
+    { url:'https://paypal.com.account-verify.ru/login?token=abc',  label:'paypal.com.account-verify.ru' },
+];
+
+function renderSamples() {
+    const box = $('sampleTags');
+    clear(box);
+    for (const sample of SAMPLES) {
+        const text = typeof sample.label === 'string' ? sample.label : sample.label[lang];
+        const tag = el('button', 'url-tag', text);
+        tag.type = 'button';
+        tag.addEventListener('click', () => {
+            $('urlInput').value = sample.url;
+            onInputChange();
+            $('urlInput').focus();
+        });
+        box.appendChild(tag);
+    }
+}
+
+function applyLang() {
+    const T = t();
+    document.documentElement.lang = lang;   // раньше всегда оставался "ru"
+
+    document.querySelectorAll('[data-i18n]').forEach(node => {
+        const key = node.getAttribute('data-i18n');
+        if (T[key] !== undefined) node.textContent = T[key];
+    });
+    document.querySelectorAll('[data-i18n-ph]').forEach(node => {
+        const key = node.getAttribute('data-i18n-ph');
+        if (T[key] !== undefined) node.placeholder = T[key];
+    });
+    ['btnRu','btnRuM'].forEach(id => { const n = $(id); if (n) n.classList.toggle('active', lang === 'ru'); });
+    ['btnEn','btnEnM'].forEach(id => { const n = $(id); if (n) n.classList.toggle('active', lang === 'en'); });
+
+    renderSamples();
+}
+
+function setLang(value) {
+    lang = value;
+    try { localStorage.setItem('pg_lang', value); } catch {}
+    applyLang();
+}
+
+function onInputChange() {
+    $('clearBtn').classList.toggle('show', $('urlInput').value.length > 0);
+}
+
+function clearInput() {
+    $('urlInput').value = '';
+    onInputChange();
+    clear($('inlineSlot'));
+    $('resultPanel').classList.remove('visible');
+    $('errorMsg').classList.add('hidden');
+    $('urlInput').focus();
+}
+
+function toggleMenu(force) {
+    const menu = $('mobileMenu');
+    const open = force !== undefined ? force : !menu.classList.contains('open');
+    menu.classList.toggle('open', open);
+    $('menuBtn').setAttribute('aria-expanded', String(open));
+}
+
+/*
+   Обработчики навешиваются здесь, а не через onclick= в разметке.
+   Причина не стилистическая: инлайновые обработчики требуют в CSP
+   директиву 'unsafe-inline' для script-src, а она обесценивает CSP
+   как защиту от XSS.
+*/
+document.querySelectorAll('.lang-btn').forEach(button => {
+    button.addEventListener('click', () => setLang(button.dataset.lang));
+});
+$('menuBtn').addEventListener('click', () => toggleMenu());
+$('mobileMenu').querySelectorAll('a').forEach(link => {
+    link.addEventListener('click', () => toggleMenu(false));
+});
+$('scanBtn').addEventListener('click', startScan);
+$('clearBtn').addEventListener('click', clearInput);
+$('urlInput').addEventListener('input', onInputChange);
+$('urlInput').addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); startScan(); }
+});
 
 applyLang();
 </script>
