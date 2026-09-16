@@ -262,7 +262,7 @@
 /* ─── 1. Конфигурация ─────────────────────────────────────────────── */
 
 const BACKEND_URL   = 'https://phishguard-ayrt.onrender.com';
-const BACKEND_TIMEOUT_MS = 30000;   // холодный старт Render занимает до ~50 с
+const BACKEND_TIMEOUT_MS = 70000;   // холодный старт Render занимает до ~60 с
 const CACHE_TTL_MS  = 15 * 60 * 1000;   // столько же, сколько CACHE_TTL_SCAN на сервере
 const CACHE_KEY     = 'pg_cache_v2';
 const CACHE_MAX     = 50;
@@ -310,6 +310,8 @@ const I18N = {
         step_connect:'Подключение к серверу...',
         step_analyze:'Анализ: базы угроз, возраст домена, структура...',
         step_local:'Сервер недоступен — локальный анализ...',
+        step_waking:'Сервер просыпается, это займёт до минуты...',
+        step_waking2:'Ещё чуть-чуть, почти готово...',
         step_done:'Готово',
         v_safe:'БЕЗОПАСНО', v_susp:'ПОДОЗРИТЕЛЬНО', v_danger:'ОПАСНО',
         v_unknown:'НЕ ПРОВЕРЕНО',
@@ -342,6 +344,8 @@ const I18N = {
         step_connect:'Connecting to server...',
         step_analyze:'Analysing: threat feeds, domain age, structure...',
         step_local:'Server unavailable — local analysis...',
+        step_waking:'Waking the server, this can take a minute...',
+        step_waking2:'Almost there...',
         step_done:'Done',
         v_safe:'SAFE', v_susp:'SUSPICIOUS', v_danger:'DANGER',
         v_unknown:'NOT VERIFIED',
@@ -1438,12 +1442,20 @@ async function startScan() {
     $('resultPanel').classList.remove('visible');
 
     let result = null;
+    // Бесплатный Render засыпает после 15 минут простоя, и первый запрос
+    // ждёт пробуждения контейнера. Без объяснения это выглядит как
+    // зависший сайт, и человек уходит.
+    const wakingTimers = [
+        setTimeout(() => setProgress(65, T.step_waking), 6000),
+        setTimeout(() => setProgress(85, T.step_waking2), 25000),
+    ];
     try {
         setProgress(20, T.step_connect);
         setProgress(55, T.step_analyze);
         result = await scanViaBackend(normalized);
         setProgress(100, T.step_done);
     } catch (err) {
+        wakingTimers.forEach(clearTimeout);
         const message = String(err && err.message || err);
         if (message.startsWith('RATE_LIMIT:')) {
             // Осмысленное сообщение вместо молчаливого перехода в резерв.
@@ -1462,6 +1474,7 @@ async function startScan() {
         result = engineLocal(normalized);
         setProgress(100, T.step_done);
     }
+    wakingTimers.forEach(clearTimeout);
 
     bar.classList.add('hidden');
     button.disabled = false;
