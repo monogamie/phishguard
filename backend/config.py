@@ -65,7 +65,9 @@ DEFAULT_WEIGHTS: dict[str, int] = {
     # ── Лексика и имперсонация ──────────────────────────────────
     "trigger_keywords":      12,   # базовый вес за первое слово
     "trigger_keywords_many": 22,   # два и более слов — сильнее
-    "suspicious_tld":        20,   # .xyz, .tk, .top, …
+    "suspicious_tld":        20,   # .xyz, .tk, .top, … (бесплатные)
+    "abused_tld":            10,   # .shop, .online, .site (дешёвые)
+    "scam_pattern":          35,   # готовая схема: голосование+дети и т.п.
     "digits_in_domain":      10,   # g00gle.com
     "brand_impersonation":   45,   # бренд в чужом регистрируемом домене
     "brand_typosquat":       50,   # paypa1.com, gogle.com

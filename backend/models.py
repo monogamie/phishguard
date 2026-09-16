@@ -232,6 +232,8 @@ class LexicalFeatures(BaseModel):
     hyphen_count:          int = 0
     trigger_keywords:      list[str] = Field(default_factory=list)
     suspicious_tld:        bool = False
+    abused_tld:            bool = False
+    scam_pattern:          Optional[str] = None   # fake_vote | fake_payout | fake_prize
     is_trusted_domain:     bool = False
     brand_match:           Optional[BrandMatch] = None
     decoded_host:          Optional[str] = None   # хост после punycode-декода

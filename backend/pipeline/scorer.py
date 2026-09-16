@@ -368,6 +368,22 @@ def calculate_risk_score(
               f"поэтому её массово используют для одноразовых доменов",
               weight_key="suspicious_tld")
 
+    elif lexical.abused_tld:
+        c.add("ABUSED_TLD", Severity.INFO, "Дешёвая доменная зона",
+              f"Зона .{lexical.tld} стоит копейки, поэтому в ней много "
+              f"одноразовых сайтов. Сама по себе не опасна, но в сочетании "
+              f"с другими признаками — повод насторожиться",
+              weight_key="abused_tld")
+
+    if lexical.scam_pattern:
+        from pipeline.lexical_analyzer import SCAM_PATTERN_LABELS
+        label = SCAM_PATTERN_LABELS.get(lexical.scam_pattern, lexical.scam_pattern)
+        c.add("SCAM_PATTERN", Severity.DANGER, "Узнаваемая схема обмана",
+              f"Адрес построен по известной схеме: {label}. Отдельные слова тут "
+              f"безобидны, опасна именно их связка — так устроены массовые "
+              f"рассылки, ворующие аккаунты",
+              weight_key="scam_pattern")
+
     if lexical.has_digits_in_domain:
         c.add("DIGITS_IN_DOMAIN", Severity.INFO, "Цифры в домене",
               "Цифры в имени домена часто заменяют похожие буквы (0 → o, 1 → l)",

@@ -206,3 +206,51 @@ def test_ai_result_lands_in_details():
                                      summary="s", raw_delta=99))
     assert r.details["ai"]["delta"] == 20
     assert r.details["ai"]["raw_delta"] == 99   # сырое значение для диагностики
+
+
+# ── Реальный случай: ссылка, укравшая аккаунт в Telegram ─────────────
+
+def test_real_case_is_flagged_when_domain_age_known():
+    """
+    http://born.playjoy-dash.shop/deti/9 — реальная ссылка из рассылки
+    со взломанного аккаунта. Старый сканер дал 15 баллов и «безопасно».
+    """
+    from pipeline.lexical_analyzer import lexical_analyzer as la
+    url = "http://born.playjoy-dash.shop/deti/9"
+    r = calculate_risk_score(
+        url=url, original_url=url,
+        gsb=ThreatIntelResult(checked=True, is_threat=False),
+        reputation=ReputationResult(checked=True),
+        domain_age=DomainAgeResult(checked=True, age_days=3),
+        lexical=la.analyze(url),
+    )
+    assert r.verdict == Verdict.PHISHING
+    assert r.risk_score >= 60
+
+
+def test_real_case_is_at_least_suspicious_offline():
+    """Даже когда все внешние источники молчат, вердикт не должен быть SAFE."""
+    from pipeline.lexical_analyzer import lexical_analyzer as la
+    url = "http://born.playjoy-dash.shop/deti/9"
+    r = calculate_risk_score(
+        url=url, original_url=url,
+        gsb=ThreatIntelResult(checked=False),
+        reputation=ReputationResult(checked=False),
+        domain_age=DomainAgeResult(checked=False),
+        lexical=la.analyze(url),
+    )
+    assert r.verdict != Verdict.SAFE
+
+
+def test_scam_pattern_signal_is_emitted():
+    from pipeline.lexical_analyzer import lexical_analyzer as la
+    url = "http://konkurs-deti.shop/golosovanie/masha"
+    r = calculate_risk_score(
+        url=url, original_url=url,
+        gsb=ThreatIntelResult(checked=True, is_threat=False),
+        reputation=ReputationResult(checked=True),
+        domain_age=DomainAgeResult(checked=True, age_days=3000),
+        lexical=la.analyze(url),
+    )
+    assert any(s.code == "SCAM_PATTERN" for s in r.signals)
+    assert r.verdict in (Verdict.SUSPICIOUS, Verdict.PHISHING)
