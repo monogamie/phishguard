@@ -2,12 +2,13 @@
 import pytest
 
 from config import settings
-from models import (BrandMatch, DomainAgeResult, LexicalFeatures, RedirectInfo,
-                    ReputationResult, ThreatIntelResult, Verdict)
+from models import (AiVerdictResult, BrandMatch, DomainAgeResult, LexicalFeatures, Severity,
+                    RedirectInfo, ReputationResult, ThreatIntelResult, Verdict)
 from pipeline.scorer import calculate_risk_score
 
 
-def score_for(lexical=None, gsb=None, reputation=None, age=None, redirects=None):
+def score_for(lexical=None, gsb=None, reputation=None, age=None,
+              redirects=None, ai=None):
     return calculate_risk_score(
         url="https://example.com/",
         original_url="https://example.com/",
@@ -16,6 +17,7 @@ def score_for(lexical=None, gsb=None, reputation=None, age=None, redirects=None)
         domain_age=age or DomainAgeResult(checked=True, age_days=3000),
         lexical=lexical or LexicalFeatures(registered_domain="example.com"),
         redirects=redirects,
+        ai=ai,
     )
 
 
@@ -127,3 +129,128 @@ def test_confidence_reflects_available_sources():
 def test_weight_lookup_survives_unknown_key():
     """Регрессия: W["ключ"] бросал KeyError при урезанном WEIGHTS."""
     assert settings.weight("no_such_weight_key") == 0
+
+
+# ── Уровень 1c: языковая модель как ещё один источник ────────────
+
+def test_ai_delta_adds_to_score():
+    """Поправка модели складывается с остальными, как обычный вес."""
+    plain = score_for()
+    with_ai = score_for(ai=AiVerdictResult(checked=True, delta=30,
+                                           confidence="high",
+                                           summary="Имитация РЖД"))
+    assert with_ai.risk_score == plain.risk_score + 30
+    assert any(s.code == "AI_SUSPICIOUS" for s in with_ai.signals)
+
+
+def test_ai_cannot_override_external_threat_hit():
+    """
+    Модель — мнение, база угроз — факт. Даже максимально «оправдательный»
+    ответ модели не должен снимать подтверждённую угрозу.
+    """
+    r = score_for(
+        gsb=ThreatIntelResult(checked=True, is_threat=True,
+                              threat_types=["SOCIAL_ENGINEERING"]),
+        ai=AiVerdictResult(checked=True, delta=-15, confidence="high",
+                           summary="Выглядит безопасно"))
+    assert r.risk_score >= 90
+    assert r.verdict == Verdict.PHISHING
+
+
+def test_ai_cannot_break_trusted_domain_cap():
+    """Модель не может объявить фишингом google.com."""
+    lex = LexicalFeatures(registered_domain="google.com", is_trusted_domain=True)
+    r = score_for(lexical=lex,
+                  ai=AiVerdictResult(checked=True, delta=35, confidence="high",
+                                     summary="Похоже на фишинг"))
+    assert r.verdict == Verdict.SAFE
+
+
+def test_ai_alone_cannot_produce_phishing_verdict():
+    """
+    Максимальная поправка модели (35) меньше порога PHISHING (60):
+    одного её голоса на вердикт не хватает — нужны другие улики.
+    """
+    r = score_for(ai=AiVerdictResult(checked=True, delta=35, confidence="high",
+                                     summary="Подозрительно"),
+                  age=DomainAgeResult(checked=True, age_days=3000))
+    assert r.verdict != Verdict.PHISHING
+
+
+def test_ai_negative_delta_lowers_score():
+    lex = LexicalFeatures(registered_domain="small-shop.xyz", suspicious_tld=True)
+    without = score_for(lexical=lex)
+    with_ai = score_for(lexical=lex,
+                        ai=AiVerdictResult(checked=True, delta=-15,
+                                           confidence="high",
+                                           summary="Обычный магазин"))
+    assert with_ai.risk_score == without.risk_score - 15
+
+
+def test_ai_clean_shows_as_ok_signal():
+    r = score_for(ai=AiVerdictResult(checked=True, delta=0, confidence="high",
+                                     summary="Ничего подозрительного"))
+    assert any(s.code == "AI_CLEAN" and s.severity == Severity.OK
+               for s in r.signals)
+
+
+def test_unavailable_ai_does_not_affect_score():
+    """Выключенный или упавший уровень не должен менять вердикт."""
+    plain = score_for()
+    with_failed = score_for(ai=AiVerdictResult(checked=False, error="нет ключа"))
+    assert with_failed.risk_score == plain.risk_score
+
+
+def test_ai_result_lands_in_details():
+    r = score_for(ai=AiVerdictResult(checked=True, delta=20, confidence="medium",
+                                     summary="s", raw_delta=99))
+    assert r.details["ai"]["delta"] == 20
+    assert r.details["ai"]["raw_delta"] == 99   # сырое значение для диагностики
+
+
+# ── Реальный случай: ссылка, укравшая аккаунт в Telegram ─────────────
+
+def test_real_case_is_flagged_when_domain_age_known():
+    """
+    http://born.playjoy-dash.shop/deti/9 — реальная ссылка из рассылки
+    со взломанного аккаунта. Старый сканер дал 15 баллов и «безопасно».
+    """
+    from pipeline.lexical_analyzer import lexical_analyzer as la
+    url = "http://born.playjoy-dash.shop/deti/9"
+    r = calculate_risk_score(
+        url=url, original_url=url,
+        gsb=ThreatIntelResult(checked=True, is_threat=False),
+        reputation=ReputationResult(checked=True),
+        domain_age=DomainAgeResult(checked=True, age_days=3),
+        lexical=la.analyze(url),
+    )
+    assert r.verdict == Verdict.PHISHING
+    assert r.risk_score >= 60
+
+
+def test_real_case_is_at_least_suspicious_offline():
+    """Даже когда все внешние источники молчат, вердикт не должен быть SAFE."""
+    from pipeline.lexical_analyzer import lexical_analyzer as la
+    url = "http://born.playjoy-dash.shop/deti/9"
+    r = calculate_risk_score(
+        url=url, original_url=url,
+        gsb=ThreatIntelResult(checked=False),
+        reputation=ReputationResult(checked=False),
+        domain_age=DomainAgeResult(checked=False),
+        lexical=la.analyze(url),
+    )
+    assert r.verdict != Verdict.SAFE
+
+
+def test_scam_pattern_signal_is_emitted():
+    from pipeline.lexical_analyzer import lexical_analyzer as la
+    url = "http://konkurs-deti.shop/golosovanie/masha"
+    r = calculate_risk_score(
+        url=url, original_url=url,
+        gsb=ThreatIntelResult(checked=True, is_threat=False),
+        reputation=ReputationResult(checked=True),
+        domain_age=DomainAgeResult(checked=True, age_days=3000),
+        lexical=la.analyze(url),
+    )
+    assert any(s.code == "SCAM_PATTERN" for s in r.signals)
+    assert r.verdict in (Verdict.SUSPICIOUS, Verdict.PHISHING)

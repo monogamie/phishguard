@@ -101,6 +101,33 @@ _TRIGGER_KEYWORDS: frozenset[str] = frozenset({
     "token", "otp", "2fa", "id", "customer", "client", "support",
 })
 
+# Русские слова латиницей и кириллицей.
+# Список был ЧИСТО АНГЛИЙСКИМ, и это дыра размером с рунет: сайт,
+# нацеленный на русскоязычную жертву, пишет в адресе `golosovanie`,
+# `konkurs`, `vyplata`, а не `voting` и `payout`. Реальная ссылка
+# born.playjoy-dash.shop/deti/9, укравшая аккаунт в Telegram, не дала
+# ни одного срабатывания именно поэтому.
+_TRIGGER_KEYWORDS_RU: frozenset[str] = frozenset({
+    # голосование и конкурсы — самая частая схема угона Telegram
+    "golos", "golosovanie", "golosovat", "golosuy", "vote", "voting",
+    "konkurs", "concurs", "reyting", "rating", "opros",
+    # «детский» антураж, вызывающий доверие
+    "deti", "detskiy", "detsad", "rebenok", "malysh", "shkola",
+    # деньги
+    "priz", "prize", "vyigrysh", "podarok", "podarki", "bonus",
+    "vyplata", "vyplaty", "vozvrat", "kompensaciya", "posobie",
+    "subsidiya", "grant", "lotereya", "rozygrysh", "akciya",
+    "perevod", "oplata", "karta", "koshelek", "schet", "dengi",
+    # давление и «подтверди себя»
+    "podtverdit", "podtverzhdenie", "proverka", "vhod", "voyti",
+    "avtorizaciya", "blokirovka", "zablokirovan", "srochno",
+    # кириллица напрямую — некоторые сайты не транслитерируют
+    "голос", "голосование", "конкурс", "дети", "ребенок", "приз",
+    "подарок", "выплата", "возврат", "бонус", "вход", "подтвердить",
+})
+
+_TRIGGER_KEYWORDS_ALL = _TRIGGER_KEYWORDS | _TRIGGER_KEYWORDS_RU
+
 # Бесплатные и массово злоупотребляемые доменные зоны.
 _SUSPICIOUS_TLDS: frozenset[str] = frozenset({
     "xyz", "tk", "ml", "ga", "cf", "gq", "top", "click", "loan",
@@ -109,6 +136,18 @@ _SUSPICIOUS_TLDS: frozenset[str] = frozenset({
     "cfd", "sbs", "bar", "hair", "skin", "boats", "wang", "men",
     "rest", "quest", "beauty", "mom", "lol", "autos", "makeup",
     "zip", "mov", "kim", "country", "science", "gdn", "accountant",
+})
+
+# Второй ярус зон: не бесплатные, но дешёвые и массово используемые
+# под одноразовые сайты. Вес вдвое меньше, чем у первого яруса, —
+# в этих зонах полно нормальных сайтов, и штрафовать их наравне
+# с .tk нельзя. Зона .shop попала сюда после разбора реального
+# промаха: born.playjoy-dash.shop получил за зону ноль баллов.
+_ABUSED_TLDS: frozenset[str] = frozenset({
+    "shop", "store", "online", "site", "website", "space", "fun",
+    "live", "club", "life", "world", "today", "link", "digital",
+    "agency", "city", "host", "press", "one", "uno", "run",
+    "shopping", "cloud", "pics", "photo", "email", "services",
 })
 
 # Сокращатели ссылок: сам домен всегда «чистый», анализировать надо цель.
@@ -150,7 +189,73 @@ def _keyword_pattern(keywords: frozenset[str]) -> re.Pattern[str]:
     return re.compile(rf"(?<![a-z])({alternation})(?![a-z])", re.IGNORECASE)
 
 
-_KEYWORD_RE = _keyword_pattern(_TRIGGER_KEYWORDS)
+_KEYWORD_RE = _keyword_pattern(_TRIGGER_KEYWORDS_ALL)
+
+# ── Готовые схемы мошенничества ──────────────────────────────────
+# Отдельные слова по одному мало что значат: «дети» — нормальное
+# слово, «голосование» — тоже. Опасна их КОМБИНАЦИЯ: связка
+# «голосование + дети» это конкретная, многократно описанная схема
+# угона аккаунтов, а не абстрактное подозрение.
+#
+# Каждая схема — это (код, набор_А, набор_Б): срабатывает, когда в
+# адресе есть слово из А и слово из Б одновременно.
+_SCAM_PATTERNS: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
+    # Классика угона Telegram/WhatsApp: «проголосуй за ребёнка в конкурсе»
+    ("fake_vote",
+     frozenset({"golos", "golosovanie", "golosovat", "golosuy", "vote",
+                "voting", "konkurs", "concurs", "reyting", "rating",
+                "голос", "голосование", "конкурс"}),
+     frozenset({"deti", "detskiy", "rebenok", "malysh", "detsad",
+                "shkola", "grant", "risunok", "talant", "дети",
+                "ребенок", "конкурс", "голосование"})),
+    # «Вам положена выплата / возврат налога / компенсация»
+    ("fake_payout",
+     frozenset({"vyplata", "vyplaty", "vozvrat", "kompensaciya",
+                "posobie", "subsidiya", "refund", "payout",
+                "выплата", "возврат"}),
+     frozenset({"oformit", "poluchit", "karta", "schet", "nalog",
+                "gosuslugi", "bank", "perevod", "dengi", "card",
+                "получить", "оформить"})),
+    # «Вы выиграли приз, заберите подарок»
+    ("fake_prize",
+     frozenset({"priz", "prize", "vyigrysh", "podarok", "podarki",
+                "lotereya", "rozygrysh", "bonus", "приз", "подарок"}),
+     frozenset({"poluchit", "zabrat", "aktivirovat", "claim", "win",
+                "winner", "akciya", "promo", "получить", "забрать"})),
+)
+
+SCAM_PATTERN_LABELS = {
+    "fake_vote": "поддельное голосование или конкурс",
+    "fake_payout": "обещание выплаты или возврата денег",
+    "fake_prize": "обещание приза или подарка",
+}
+
+
+def _group_pattern(words: frozenset[str]) -> re.Pattern[str]:
+    alternation = "|".join(sorted(map(re.escape, words), key=len, reverse=True))
+    return re.compile(rf"(?<![a-z])({alternation})", re.IGNORECASE)
+
+
+# Компилируем группы один раз при импорте.
+_SCAM_PATTERNS_RE = tuple(
+    (code, _group_pattern(a), _group_pattern(b)) for code, a, b in _SCAM_PATTERNS
+)
+
+
+def _match_scam_pattern(text: str) -> Optional[str]:
+    """
+    Возвращает код схемы, если в адресе сошлись слова из обеих групп.
+
+    Ищем по сырому тексту адреса, а не по списку найденных тревожных
+    слов: слова второй группы («оформить», «получить», «налог») сами
+    по себе безобидны и в списке тревожных им не место, но в связке
+    с первой группой они и образуют узнаваемую схему.
+    """
+    lowered = text.lower()
+    for code, group_a, group_b in _SCAM_PATTERNS_RE:
+        if group_a.search(lowered) and group_b.search(lowered):
+            return code
+    return None
 
 
 class LexicalAnalyzer:
@@ -217,6 +322,8 @@ class LexicalAnalyzer:
 
         is_trusted = registered_domain in TRUSTED_DOMAINS
 
+        keywords = self._find_keywords(path_and_query, host, is_trusted)
+
         features = LexicalFeatures(
             scheme                = scheme,
             host                  = host,
@@ -238,8 +345,11 @@ class LexicalAnalyzer:
             url_length            = len(raw),
             domain_length         = len(sld),
             hyphen_count          = host.count("-"),
-            trigger_keywords      = self._find_keywords(path_and_query, host, is_trusted),
+            trigger_keywords      = keywords,
+            scam_pattern          = (None if is_trusted else
+                                     _match_scam_pattern(f"{path_and_query} {host}")),
             suspicious_tld        = self._is_suspicious_tld(suffix),
+            abused_tld            = self._is_abused_tld(suffix),
             is_trusted_domain     = is_trusted,
             brand_match           = self._match_brand(
                                         host, decoded_host, sld,
@@ -308,6 +418,13 @@ class LexicalAnalyzer:
         if not suffix:
             return False
         return suffix.split(".")[-1] in _SUSPICIOUS_TLDS
+
+    @staticmethod
+    def _is_abused_tld(suffix: str) -> bool:
+        """Дешёвая коммерческая зона — слабый сигнал, не приговор."""
+        if not suffix:
+            return False
+        return suffix.split(".")[-1] in _ABUSED_TLDS
 
     @staticmethod
     def _find_keywords(path_and_query: str, host: str,

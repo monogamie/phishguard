@@ -278,6 +278,7 @@ const W = {
     long_url: 15, long_domain: 15, excessive_hyphens: 15, redirect_params: 20,
     encoded_host: 25, insecure_scheme: 15, shortener: 10,
     trigger_keywords: 12, trigger_keywords_many: 22, suspicious_tld: 20,
+    abused_tld: 10, scam_pattern: 35,
     digits_in_domain: 10, brand_impersonation: 45, brand_typosquat: 50,
     brand_homograph: 60, domain_age_unknown: 5,
 };
@@ -310,6 +311,9 @@ const I18N = {
         step_local:'Сервер недоступен — локальный анализ...',
         step_done:'Готово',
         v_safe:'БЕЗОПАСНО', v_susp:'ПОДОЗРИТЕЛЬНО', v_danger:'ОПАСНО',
+        v_unknown:'НЕ ПРОВЕРЕНО',
+        unverified_title:'Проверка не завершена',
+        unverified_text:'Базы угроз и дата регистрации домена недоступны — проверить удалось только структуру адреса. Это НЕ значит, что ссылка безопасна. Не вводите на ней пароли и коды.',
         tag_backend:'Сервер: ✓', tag_local:'Локальный анализ',
         tag_offline:'Сервер недоступен', tag_cached:'из кеша',
         conf:'достоверность', score_of:'из 100',
@@ -339,6 +343,9 @@ const I18N = {
         step_local:'Server unavailable — local analysis...',
         step_done:'Done',
         v_safe:'SAFE', v_susp:'SUSPICIOUS', v_danger:'DANGER',
+        v_unknown:'NOT VERIFIED',
+        unverified_title:'Check incomplete',
+        unverified_text:'Threat databases and domain age are unavailable — only the address structure could be checked. This does NOT mean the link is safe. Do not enter passwords or codes on it.',
         tag_backend:'Server: ✓', tag_local:'Local analysis',
         tag_offline:'Server unavailable', tag_cached:'cached',
         conf:'confidence', score_of:'of 100',
@@ -392,6 +399,11 @@ const SIG = {
         CROSS_DOMAIN_REDIRECT:{t:'Смена домена', d:'Переадресация уводит на другой домен.'},
         LONG_REDIRECT_CHAIN:{t:'Длинная цепочка', d:'Несколько переадресаций подряд — приём сокрытия конечного адреса.'},
         TRUSTED_DOMAIN:{t:'Репутация домена', d:'Известный домен с проверенной репутацией.'},
+        AI_SUSPICIOUS:{t:'Анализ модели', d:'Языковая модель нашла признаки, которых не увидели правила.'},
+        AI_REASSURING:{t:'Анализ модели', d:'Модель считает адрес менее опасным, чем решили правила.'},
+        AI_CLEAN:{t:'Анализ модели', d:'Модель не нашла признаков мошенничества.'},
+        SCAM_PATTERN:{t:'Узнаваемая схема обмана', d:'Связка слов в адресе повторяет известную мошенническую схему.'},
+        ABUSED_TLD:{t:'Дешёвая доменная зона', d:'Зона стоит копейки, поэтому в ней много одноразовых сайтов.'},
         HTTPS_OK:{t:'Протокол', d:'Соединение шифруется (HTTPS).'},
         ASCII_OK:{t:'Символы', d:'Только стандартные латинские символы.'},
         TLD_OK:{t:'Зона', d:'Обычная доменная зона.'},
@@ -433,6 +445,11 @@ const SIG = {
         CROSS_DOMAIN_REDIRECT:{t:'Domain change', d:'The redirect leads to a different domain.'},
         LONG_REDIRECT_CHAIN:{t:'Long chain', d:'Several redirects in a row — a way to hide the destination.'},
         TRUSTED_DOMAIN:{t:'Domain reputation', d:'Well-known domain with established reputation.'},
+        AI_SUSPICIOUS:{t:'Model analysis', d:'The language model found signals the rules missed.'},
+        AI_REASSURING:{t:'Model analysis', d:'The model considers this less risky than the rules did.'},
+        AI_CLEAN:{t:'Model analysis', d:'The model found no signs of fraud.'},
+        SCAM_PATTERN:{t:'Known scam pattern', d:'The word combination in the address matches a known fraud scheme.'},
+        ABUSED_TLD:{t:'Cheap domain zone', d:'This zone costs pennies, so it is full of throwaway sites.'},
         HTTPS_OK:{t:'Protocol', d:'Connection is encrypted (HTTPS).'},
         ASCII_OK:{t:'Characters', d:'Standard Latin characters only.'},
         TLD_OK:{t:'Zone', d:'Ordinary domain zone.'},
@@ -699,15 +716,98 @@ const SUSPICIOUS_TLDS = new Set([
     'rest','quest','beauty','mom','lol','autos','makeup','zip','mov','kim',
 ]);
 
+// Дешёвые коммерческие зоны: не бесплатные, но массово используются
+// под одноразовые сайты. Вес вдвое меньше первого яруса — тут полно
+// и нормальных сайтов. Зона .shop добавлена после разбора реального
+// промаха: born.playjoy-dash.shop получил за зону ноль баллов.
+const ABUSED_TLDS = new Set([
+    'shop','store','online','site','website','space','fun','live','club',
+    'life','world','today','link','digital','agency','city','host','press',
+    'one','uno','run','shopping','cloud','pics','photo','email','services',
+]);
+
 const KEYWORDS = ['login','signin','logon','secure','security','verify','verification',
     'validate','account','update','confirm','banking','bank','recover','recovery',
     'password','passwd','credential','wallet','prize','winner','bonus','gift',
     'suspended','limited','unusual','activity','authenticate','authorize',
     'reactivate','unlock','billing','invoice','payment','refund','webscr','token','otp'];
 
+// Русские слова латиницей и кириллицей. Список был чисто английским —
+// и это дыра размером с рунет: сайт для русскоязычной жертвы пишет
+// `golosovanie` и `deti`, а не `voting` и `children`.
+const KEYWORDS_RU = ['golos','golosovanie','golosovat','golosuy','vote','voting',
+    'konkurs','concurs','reyting','rating','opros',
+    'deti','detskiy','detsad','rebenok','malysh','shkola',
+    'priz','prize','vyigrysh','podarok','podarki','bonus',
+    'vyplata','vyplaty','vozvrat','kompensaciya','posobie','subsidiya',
+    'grant','lotereya','rozygrysh','akciya',
+    'perevod','oplata','karta','koshelek','schet','dengi',
+    'podtverdit','podtverzhdenie','proverka','vhod','voyti','avtorizaciya',
+    'blokirovka','zablokirovan','srochno',
+    'голос','голосование','конкурс','дети','ребенок','приз','подарок',
+    'выплата','возврат','бонус','вход','подтвердить'];
+
+/*
+   Готовые схемы мошенничества.
+
+   Отдельные слова по одному мало что значат: «дети» — обычное слово,
+   «голосование» — тоже. Опасна их СВЯЗКА: «проголосуй за ребёнка в
+   конкурсе» — это конкретная, многократно описанная схема угона
+   аккаунтов, а не абстрактное подозрение.
+
+   Каждая схема — пара групп: срабатывает, когда в адресе есть слово
+   из первой И слово из второй.
+*/
+const SCAM_PATTERNS = [
+    { code:'fake_vote',
+      a:['golos','golosovanie','golosovat','golosuy','vote','voting','konkurs',
+         'concurs','reyting','rating','голос','голосование','конкурс'],
+      b:['deti','detskiy','rebenok','malysh','detsad','shkola','grant',
+         'risunok','talant','дети','ребенок','конкурс','голосование'] },
+    { code:'fake_payout',
+      a:['vyplata','vyplaty','vozvrat','kompensaciya','posobie','subsidiya',
+         'refund','payout','выплата','возврат'],
+      b:['oformit','poluchit','karta','schet','nalog','gosuslugi','bank',
+         'perevod','dengi','card','получить','оформить'] },
+    { code:'fake_prize',
+      a:['priz','prize','vyigrysh','podarok','podarki','lotereya','rozygrysh',
+         'bonus','приз','подарок'],
+      b:['poluchit','zabrat','aktivirovat','claim','win','winner','akciya',
+         'promo','получить','забрать'] },
+];
+
+const SCAM_LABELS = {
+    ru:{ fake_vote:'поддельное голосование или конкурс',
+         fake_payout:'обещание выплаты или возврата денег',
+         fake_prize:'обещание приза или подарка' },
+    en:{ fake_vote:'fake voting or contest',
+         fake_payout:'promised payout or refund',
+         fake_prize:'promised prize or gift' },
+};
+
+function buildGroupRe(words) {
+    return new RegExp('(?<![a-z])(' +
+        words.slice().sort((x,y)=>y.length-x.length).join('|') + ')', 'i');
+}
+const SCAM_RE = SCAM_PATTERNS.map(p => ({
+    code: p.code, a: buildGroupRe(p.a), b: buildGroupRe(p.b),
+}));
+
+// Ищем по сырому тексту адреса, а не по списку найденных тревожных
+// слов: слова второй группы («оформить», «налог») сами по себе
+// безобидны, и в списке тревожных им не место.
+function matchScamPattern(text) {
+    const lowered = text.toLowerCase();
+    for (const p of SCAM_RE) {
+        if (p.a.test(lowered) && p.b.test(lowered)) return p.code;
+    }
+    return null;
+}
+
 // Границы слова «мягкие»: буквы вокруг запрещены, цифры и разделители — нет.
 // Поэтому /secure-login/ и login2.php находятся, а «accountant» — нет.
-const KEYWORD_RE = new RegExp('(?<![a-z])(' + KEYWORDS.slice().sort((a,b)=>b.length-a.length).join('|') + ')(?![a-z])', 'gi');
+const KEYWORD_RE = new RegExp('(?<![a-z])(' +
+    KEYWORDS.concat(KEYWORDS_RU).sort((a,b)=>b.length-a.length).join('|') + ')(?![a-z])', 'gi');
 
 /* ─── 7. Валидация ввода ──────────────────────────────────────────── */
 
@@ -881,9 +981,12 @@ function engineLocal(rawInput) {
         add('SHORTENER', 'warn', W.shortener, registered);
     }
 
-    // Зона.
-    if (SUSPICIOUS_TLDS.has(tld.split('.').pop())) {
+    // Зона — два яруса: бесплатные и просто дешёвые.
+    const lastLabel = tld.split('.').pop();
+    if (SUSPICIOUS_TLDS.has(lastLabel)) {
         add('SUSPICIOUS_TLD', 'warn', W.suspicious_tld, '.' + tld);
+    } else if (ABUSED_TLDS.has(lastLabel)) {
+        add('ABUSED_TLD', 'info', W.abused_tld, '.' + tld);
     } else if (tld) {
         ok('TLD_OK', '.' + tld);
     }
@@ -914,6 +1017,13 @@ function engineLocal(rawInput) {
                 many ? W.trigger_keywords_many : W.trigger_keywords, found.slice(0, 6).join(', '));
         }
         if (/\d/.test(sld)) add('DIGITS_IN_DOMAIN', 'info', W.digits_in_domain, '');
+
+        // Связка слов, повторяющая известную схему обмана.
+        const scam = matchScamPattern(path + ' ' + host);
+        if (scam) {
+            add('SCAM_PATTERN', 'danger', W.scam_pattern,
+                (SCAM_LABELS[lang] || SCAM_LABELS.ru)[scam]);
+        }
     }
 
     // Потолок доверия — то же правило, что и в backend/pipeline/scorer.py.
@@ -935,7 +1045,43 @@ function engineLocal(rawInput) {
         // доступен один. Честно показываем это пользователю.
         confidence: 0.25,
         offline: true,
+        trusted: isTrusted,
     };
+}
+
+// Ниже этого порога достоверности зелёный вердикт не показываем.
+// 0.5 — это «ответила хотя бы половина источников».
+const LOW_CONFIDENCE = 0.5;
+
+/*
+   Самое важное правило отображения.
+
+   Разбор реального промаха: ссылка http://born.playjoy-dash.shop/deti/9,
+   укравшая аккаунт в Telegram, получила зелёное «БЕЗОПАСНО» при
+   достоверности 25 %. То есть сервер не ответил, базы угроз и возраст
+   домена не проверялись — а пользователь увидел зелёную галочку и
+   слово «безопасно».
+
+   «Мы не смогли проверить» и «мы проверили, всё чисто» — принципиально
+   разные вещи, и показывать их одинаково нельзя. Особенно первое как
+   второе: сканер, который успокаивает вместо предупреждения, опаснее
+   его отсутствия — человек без него был бы осторожнее.
+*/
+function applyConfidence(result) {
+    // Доверенный домен — исключение. Проверка «это настоящий google.com,
+    // а не подделка» выполняется локально и не зависит от внешних баз,
+    // так что помечать его «не проверено» было бы ложной тревогой.
+    if (result.trusted) return result;
+
+    if (result.confidence != null && result.confidence < LOW_CONFIDENCE
+        && result.level === 'safe') {
+        return Object.assign({}, result, {
+            level: 'unverified',
+            verdict: t().v_unknown,
+            unverified: true,
+        });
+    }
+    return result;
 }
 
 function levelOf(score) {
@@ -1010,6 +1156,8 @@ function backendToResult(data) {
         confidence: typeof data.confidence === 'number' ? data.confidence : null,
         redirects: data.redirects || null,
         cached: !!data.cached,
+        trusted: !!(data.details && data.details.lexical
+                    && data.details.lexical.is_trusted_domain),
         elapsedMs: data.elapsed_ms || 0,
         raw: data,
         offline: false,
@@ -1069,9 +1217,12 @@ function cacheSet(url, value) {
 /* ─── 11. Отрисовка ───────────────────────────────────────────────── */
 
 const CIRCUMFERENCE = 213.6;
-const COLORS  = { safe:'#22c55e', suspicious:'#f59e0b', danger:'#ef4444' };
-const TEXT_CLS = { safe:'text-green-400', suspicious:'text-amber-400', danger:'text-red-400' };
-const BORDER_CLS = { safe:'border-green-500/40', suspicious:'border-amber-500/40', danger:'border-red-500/40' };
+const COLORS  = { safe:'#22c55e', suspicious:'#f59e0b', danger:'#ef4444',
+                  unverified:'#94a3b8' };
+const TEXT_CLS = { safe:'text-green-400', suspicious:'text-amber-400', danger:'text-red-400',
+                   unverified:'text-slate-300' };
+const BORDER_CLS = { safe:'border-green-500/40', suspicious:'border-amber-500/40',
+                     danger:'border-red-500/40', unverified:'border-slate-500/50' };
 const DOT_CLS = {
     ok:'bg-green-400 shadow-[0_0_6px_#22c55e]',
     info:'bg-sky-400 shadow-[0_0_6px_#38bdf8]',
@@ -1156,6 +1307,10 @@ function renderEngineTags(result) {
         if (d && d.domain_age && d.domain_age.age_days != null) {
             tags.push('RDAP: ' + d.domain_age.age_days + ' d');
         }
+        if (d && d.ai && d.ai.checked) {
+            const sign = d.ai.delta > 0 ? '+' : '';
+            tags.push('Claude: ' + sign + d.ai.delta);
+        }
         if (result.elapsedMs) tags.push(result.elapsedMs + ' ms');
     }
     if (result.confidence != null) {
@@ -1188,7 +1343,18 @@ function renderResult(result) {
 
     renderEngineTags(result);
     renderRedirects(result.redirects);
-    renderSignals($('signalsGrid'), result.signals);
+
+    // Когда проверка неполная — объяснение идёт ПЕРВЫМ, до признаков.
+    const signals = result.signals.slice();
+    if (result.unverified) {
+        signals.unshift({
+            code: '_UNVERIFIED', severity: 'warn', weight: 0,
+            serverTitle: t().unverified_title,
+            serverDetail: t().unverified_text,
+            extra: '',
+        });
+    }
+    renderSignals($('signalsGrid'), signals);
 
     const rawBox = $('rawDetails');
     if (result.raw) {
@@ -1208,6 +1374,7 @@ function showInline(url, status, level) {
         safe:'bg-emerald-500/20 text-emerald-400 border-emerald-500/50',
         suspicious:'bg-amber-500/20 text-amber-400 border-amber-500/50',
         danger:'bg-red-500/20 text-red-400 border-red-500/50',
+        unverified:'bg-slate-500/20 text-slate-300 border-slate-500/50',
     };
     const slot = $('inlineSlot');
     clear(slot);
@@ -1254,7 +1421,8 @@ async function startScan() {
     // Кеш.
     const cached = cacheGet(normalized);
     if (cached) {
-        const result = Object.assign({}, cached, { cached:true, verdict:verdictOf(cached.score) });
+        const result = applyConfidence(
+            Object.assign({}, cached, { cached:true, verdict:verdictOf(cached.score) }));
         showInline(raw, result.verdict, result.level);
         renderResult(result);
         return;
@@ -1302,6 +1470,7 @@ async function startScan() {
     if (!result) { showError(T.err_url); return; }
 
     cacheSet(normalized, result);
+    result = applyConfidence(result);
     showInline(raw, result.verdict, result.level);
     renderResult(result);
 }

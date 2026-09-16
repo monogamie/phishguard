@@ -120,3 +120,62 @@ def test_trusted_flag_uses_etld_plus_one():
     """`google.com.evil.ru` не должен считаться доверенным."""
     assert la.analyze("https://google.com.evil.ru/").is_trusted_domain is False
     assert la.analyze("https://www.amazon.co.uk/").is_trusted_domain is True
+
+
+# ── Регрессия по реальному случаю: угон Telegram через «голосование» ──
+# Ссылка http://born.playjoy-dash.shop/deti/9 украла аккаунт у живого
+# человека и получила от сканера 15 баллов и вердикт «безопасно».
+# Разбор промаха: зона .shop не считалась подозрительной, а список
+# тревожных слов был чисто английским и не знал слова «deti».
+
+REAL_CASE_URL = "http://born.playjoy-dash.shop/deti/9"
+
+
+def test_real_case_russian_keyword_found():
+    assert "deti" in la.analyze(REAL_CASE_URL).trigger_keywords
+
+
+def test_real_case_abused_tld_detected():
+    f = la.analyze(REAL_CASE_URL)
+    assert f.abused_tld is True          # .shop — дешёвая зона
+    assert f.suspicious_tld is False     # но не бесплатная, вес меньше
+
+
+@pytest.mark.parametrize("url,keyword", [
+    ("https://x.shop/golosovanie/masha", "golosovanie"),
+    ("https://x.site/vyplata", "vyplata"),
+    ("https://x.top/podarok", "podarok"),
+    ("https://x.top/podtverdit-vhod", "podtverdit"),
+    ("https://x.top/конкурс", "конкурс"),
+])
+def test_russian_keywords_found(url, keyword):
+    assert keyword in la.analyze(url).trigger_keywords
+
+
+@pytest.mark.parametrize("url,pattern", [
+    ("http://konkurs-deti-2026.shop/golosovanie/masha", "fake_vote"),
+    ("https://golosovanie-detskiy-konkurs.top/", "fake_vote"),
+    ("https://vozvrat-nalog.site/oformit-vyplatu", "fake_payout"),
+    ("https://podarok-akciya.online/poluchit-priz", "fake_prize"),
+])
+def test_scam_patterns_detected(url, pattern):
+    """Связка слов из двух групп — это узнаваемая схема, а не догадка."""
+    assert la.analyze(url).scam_pattern == pattern
+
+
+@pytest.mark.parametrize("url", [
+    "https://ozon.ru/category/deti",          # детские товары — не мошенничество
+    "https://google.com/vote",
+    "https://github.com/x/y",
+    "https://www.amazon.co.uk/gp/cart",
+    "https://school-konkurs.edu.ru/",         # одно слово из группы А, без Б
+])
+def test_scam_patterns_no_false_positives(url):
+    assert la.analyze(url).scam_pattern is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://google.com", "https://github.com/x", "https://sberbank.ru/person",
+])
+def test_abused_tld_not_flagged_for_normal_zones(url):
+    assert la.analyze(url).abused_tld is False

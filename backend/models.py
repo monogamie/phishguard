@@ -150,6 +150,42 @@ class ReputationResult(BaseModel):
     error: Optional[str] = None
 
 
+class AiVerdictResult(BaseModel):
+    """
+    Мнение языковой модели о ссылке.
+
+    `delta` — уже зажатая поправка, которая пойдёт в балл.
+    `raw_delta` — то, что вернула модель до зажима. Хранится отдельно
+    специально для диагностики: если в логах видно, что raw_delta
+    регулярно упирается в границы, это либо плохо подобранные границы,
+    либо попытки инъекции через URL.
+    """
+    checked: bool = False
+    delta: int = 0
+    raw_delta: int = 0
+    confidence: Optional[str] = None       # low | medium | high
+    brand: Optional[str] = None
+    summary: Optional[str] = None
+    model: Optional[str] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    error: Optional[str] = None
+
+
+class _AiModelOutput(BaseModel):
+    """
+    Схема того, что возвращает модель.
+
+    Нужна отдельно от AiVerdictResult: сюда попадает сырой,
+    непроверенный ответ внешней системы, и он обязан пройти
+    валидацию прежде, чем что-то из него дойдёт до скорера.
+    """
+    delta: int
+    confidence: str
+    brand: str = ""
+    summary: str = ""
+
+
 class DomainAgeResult(BaseModel):
     """
     Возраст домена.
@@ -196,6 +232,8 @@ class LexicalFeatures(BaseModel):
     hyphen_count:          int = 0
     trigger_keywords:      list[str] = Field(default_factory=list)
     suspicious_tld:        bool = False
+    abused_tld:            bool = False
+    scam_pattern:          Optional[str] = None   # fake_vote | fake_payout | fake_prize
     is_trusted_domain:     bool = False
     brand_match:           Optional[BrandMatch] = None
     decoded_host:          Optional[str] = None   # хост после punycode-декода
