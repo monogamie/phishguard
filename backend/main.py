@@ -52,6 +52,7 @@ from cache import TTLCache
 from config import settings
 from http_client import close_client, init_client
 from models import (
+    AiVerdictResult,
     BatchScanRequest,
     DomainAgeResult,
     ReputationResult,
@@ -59,8 +60,10 @@ from models import (
     ScanResponse,
     ThreatIntelResult,
 )
+from pipeline import ai_analyzer as ai_module
 from pipeline import domain_age as domain_age_module
 from pipeline import reputation as reputation_module
+from pipeline.ai_analyzer import analyze_with_ai
 from pipeline.domain_age import check_domain_age
 from pipeline.lexical_analyzer import lexical_analyzer
 from pipeline.reputation import check_urlhaus
@@ -104,6 +107,11 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "URLHAUS_AUTH_KEY не задан — URLhaus, скорее всего, ответит 401. "
             "Бесплатная регистрация: https://auth.abuse.ch/"
+        )
+    if not settings.ANTHROPIC_API_KEY:
+        logger.info(
+            "ANTHROPIC_API_KEY не задан — уровень анализа моделью отключён. "
+            "Это единственный платный источник, остальные четыре работают без него."
         )
     if not settings.BLOCK_PRIVATE_ADDRESSES:
         logger.warning(
@@ -214,14 +222,20 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
     # ── Уровень 3 первым: он мгновенный и даёт хост для остальных ─
     lexical = lexical_analyzer.analyze(scanned_url)
 
-    # ── Уровни 1, 1b, 2 — параллельно ────────────────────────────
+    # ── Уровни 1, 1b, 1c, 2 — параллельно ────────────────────────
+    # Уровень AI идёт в этом же gather, а не после: ему нужны только
+    # URL и структурные признаки, которые уже посчитаны. Запусти мы
+    # его следом — он добавил бы свою задержку к общей, а так она
+    # прячется за ожиданием остальных источников.
+    #
     # return_exceptions=True гарантирует, что падение одного уровня
     # не отменит остальные: gather по умолчанию пробрасывает первое
     # исключение и бросает результаты других задач.
-    gsb_result, rep_result, age_result = await asyncio.gather(
+    gsb_result, rep_result, age_result, ai_result = await asyncio.gather(
         check_google_safe_browsing(scanned_url),
         check_urlhaus(scanned_url, lexical.host),
         check_domain_age(lexical.registered_domain),
+        analyze_with_ai(scanned_url, lexical),
         return_exceptions=True,
     )
 
@@ -234,6 +248,7 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
     gsb = _unwrap(gsb_result, ThreatIntelResult(checked=False, error="stage failed"), "gsb")
     reputation = _unwrap(rep_result, ReputationResult(checked=False, error="stage failed"), "urlhaus")
     age = _unwrap(age_result, DomainAgeResult(checked=False, error="stage failed"), "domain_age")
+    ai = _unwrap(ai_result, AiVerdictResult(checked=False, error="stage failed"), "ai")
 
     # ── Уровень 4: агрегация ─────────────────────────────────────
     response = calculate_risk_score(
@@ -244,6 +259,7 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
         domain_age=age,
         lexical=lexical,
         redirects=redirects,
+        ai=ai,
     )
     response.elapsed_ms = int((time.perf_counter() - started) * 1000)
     return response
@@ -302,6 +318,7 @@ async def health_check():
             "urlhaus": bool(settings.URLHAUS_AUTH_KEY),
             "rdap": True,
             "lexical": True,
+            "ai": bool(settings.ANTHROPIC_API_KEY) and settings.AI_ENABLED,
         },
         "ssrf_protection": settings.BLOCK_PRIVATE_ADDRESSES,
     }
@@ -314,6 +331,7 @@ async def stats():
         "scan_cache": _scan_cache.stats(),
         "domain_age_cache": domain_age_module.cache_stats(),
         "reputation_cache": reputation_module.cache_stats(),
+        "ai_cache": ai_module.cache_stats(),
     }
 
 

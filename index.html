@@ -392,6 +392,9 @@ const SIG = {
         CROSS_DOMAIN_REDIRECT:{t:'Смена домена', d:'Переадресация уводит на другой домен.'},
         LONG_REDIRECT_CHAIN:{t:'Длинная цепочка', d:'Несколько переадресаций подряд — приём сокрытия конечного адреса.'},
         TRUSTED_DOMAIN:{t:'Репутация домена', d:'Известный домен с проверенной репутацией.'},
+        AI_SUSPICIOUS:{t:'Анализ модели', d:'Языковая модель нашла признаки, которых не увидели правила.'},
+        AI_REASSURING:{t:'Анализ модели', d:'Модель считает адрес менее опасным, чем решили правила.'},
+        AI_CLEAN:{t:'Анализ модели', d:'Модель не нашла признаков мошенничества.'},
         HTTPS_OK:{t:'Протокол', d:'Соединение шифруется (HTTPS).'},
         ASCII_OK:{t:'Символы', d:'Только стандартные латинские символы.'},
         TLD_OK:{t:'Зона', d:'Обычная доменная зона.'},
@@ -433,6 +436,9 @@ const SIG = {
         CROSS_DOMAIN_REDIRECT:{t:'Domain change', d:'The redirect leads to a different domain.'},
         LONG_REDIRECT_CHAIN:{t:'Long chain', d:'Several redirects in a row — a way to hide the destination.'},
         TRUSTED_DOMAIN:{t:'Domain reputation', d:'Well-known domain with established reputation.'},
+        AI_SUSPICIOUS:{t:'Model analysis', d:'The language model found signals the rules missed.'},
+        AI_REASSURING:{t:'Model analysis', d:'The model considers this less risky than the rules did.'},
+        AI_CLEAN:{t:'Model analysis', d:'The model found no signs of fraud.'},
         HTTPS_OK:{t:'Protocol', d:'Connection is encrypted (HTTPS).'},
         ASCII_OK:{t:'Characters', d:'Standard Latin characters only.'},
         TLD_OK:{t:'Zone', d:'Ordinary domain zone.'},
@@ -1155,6 +1161,10 @@ function renderEngineTags(result) {
         }
         if (d && d.domain_age && d.domain_age.age_days != null) {
             tags.push('RDAP: ' + d.domain_age.age_days + ' d');
+        }
+        if (d && d.ai && d.ai.checked) {
+            const sign = d.ai.delta > 0 ? '+' : '';
+            tags.push('Claude: ' + sign + d.ai.delta);
         }
         if (result.elapsedMs) tags.push(result.elapsedMs + ' ms');
     }

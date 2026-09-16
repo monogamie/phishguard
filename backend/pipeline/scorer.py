@@ -59,6 +59,7 @@ from typing import Optional
 
 from config import settings
 from models import (
+    AiVerdictResult,
     DomainAgeResult,
     LexicalFeatures,
     RedirectInfo,
@@ -122,7 +123,8 @@ def _verdict(score: int) -> Verdict:
 
 
 def _confidence(gsb: ThreatIntelResult, reputation: ReputationResult,
-                age: DomainAgeResult, redirects: Optional[RedirectInfo]) -> float:
+                age: DomainAgeResult, redirects: Optional[RedirectInfo],
+                ai: Optional[AiVerdictResult] = None) -> float:
     """
     Доля источников, которые реально ответили.
 
@@ -132,6 +134,10 @@ def _confidence(gsb: ThreatIntelResult, reputation: ReputationResult,
     """
     available = 1.0                       # лексика работает всегда
     total = 4.0
+    if ai is not None:
+        total += 1
+        if ai.checked:
+            available += 1
     if gsb.checked:
         available += 1
     if reputation.checked:
@@ -152,6 +158,7 @@ def calculate_risk_score(
     domain_age: DomainAgeResult,
     lexical: LexicalFeatures,
     redirects: Optional[RedirectInfo] = None,
+    ai: Optional[AiVerdictResult] = None,
 ) -> ScanResponse:
     """
     Собирает улики всех уровней в итоговый ScanResponse.
@@ -164,6 +171,7 @@ def calculate_risk_score(
         domain_age:   RDAP/WHOIS (уровень 2)
         lexical:      структурные признаки (уровень 3)
         redirects:    цепочка редиректов (уровень 0)
+        ai:           мнение языковой модели (уровень 1c)
     """
     c = _SignalCollector()
     external_hit = False
@@ -365,6 +373,25 @@ def calculate_risk_score(
               "Цифры в имени домена часто заменяют похожие буквы (0 → o, 1 → l)",
               weight_key="digits_in_domain")
 
+    # ── Уровень 1c: мнение языковой модели ───────────────────────
+    # Вес не фиксирован: им СЛУЖИТ сама поправка, уже зажатая в
+    # границы конфига внутри ai_analyzer. Скорер к этому числу
+    # относится как к любому другому весу и ничего не пересчитывает.
+    if ai is not None and ai.checked:
+        if ai.delta > 0:
+            severity = Severity.DANGER if ai.delta >= 25 else Severity.WARN
+            title = ("Имитация бренда «%s»" % ai.brand) if ai.brand else "Анализ модели"
+            c.add("AI_SUSPICIOUS", severity, title,
+                  ai.summary or "Модель считает адрес подозрительным",
+                  weight=ai.delta)
+        elif ai.delta < 0:
+            c.add("AI_REASSURING", Severity.INFO, "Анализ модели",
+                  ai.summary or "Модель не нашла признаков мошенничества",
+                  weight=ai.delta)
+        else:
+            c.ok("AI_CLEAN", "Анализ модели",
+                 ai.summary or "Модель не нашла признаков мошенничества")
+
     # ── Финальная нормализация ───────────────────────────────────
     score = c.score
 
@@ -395,7 +422,16 @@ def calculate_risk_score(
 
     logger.info("Score for %s: %d (%s), signals=%d, confidence=%.2f",
                 url, score, verdict.value, len(c.signals),
-                _confidence(gsb, reputation, domain_age, redirects))
+                _confidence(gsb, reputation, domain_age, redirects, ai))
+
+    details = {
+        "threat_intel": gsb.model_dump(),
+        "reputation": reputation.model_dump(),
+        "domain_age": domain_age.model_dump(),
+        "lexical": lexical.model_dump(),
+    }
+    if ai is not None:
+        details["ai"] = ai.model_dump()
 
     return ScanResponse(
         url=original_url,
@@ -403,18 +439,13 @@ def calculate_risk_score(
         is_phishing=score >= settings.PHISHING_THRESHOLD,
         risk_score=score,
         verdict=verdict,
-        confidence=_confidence(gsb, reputation, domain_age, redirects),
+        confidence=_confidence(gsb, reputation, domain_age, redirects, ai),
         signals=c.signals,
         # reasons сохранён для обратной совместимости со старым фронтендом.
         reasons=[f"{s.title}: {s.detail}" for s in c.signals
                  if s.severity != Severity.OK],
         redirects=redirects,
-        details={
-            "threat_intel": gsb.model_dump(),
-            "reputation": reputation.model_dump(),
-            "domain_age": domain_age.model_dump(),
-            "lexical": lexical.model_dump(),
-        },
+        details=details,
     )
 
 
