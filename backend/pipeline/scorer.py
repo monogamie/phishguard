@@ -302,14 +302,33 @@ def calculate_risk_score(
 
     # ── Уровень 5: содержимое страницы ───────────────────────────
     if page is not None and page.checked:
-        if page.messenger_login:
-            names = ", ".join(page.messenger_login)
-            c.add("PAGE_MESSENGER_LOGIN", Severity.DANGER,
-                  "Вход через мессенджер",
-                  f"Страница предлагает войти через {names}. Именно так "
-                  f"угоняют аккаунты: вы подтверждаете вход, который "
-                  f"запустил не вы",
-                  weight_key="page_messenger_login")
+        from data.brands import BRAND_DOMAINS
+
+        # Бренд заявлен в тексте, но домен ему не принадлежит.
+        foreign_brands = []
+        if page.brands_in_text and not lexical.is_trusted_domain:
+            foreign_brands = [
+                b for b in page.brands_in_text
+                if lexical.registered_domain not in BRAND_DOMAINS.get(b, ())
+            ]
+
+        # Поле пароля и кнопка «войти через Telegram» есть у множества
+        # нормальных сайтов: у форумов, магазинов, сервисов. Сами по
+        # себе они не улика, а описание обычной страницы входа.
+        #
+        # Уликой они становятся рядом с чем-то настоящим: чужим брендом
+        # на странице, формой на сторонний адрес или доменом, заведённым
+        # на прошлой неделе. Тогда кнопка «войти через Telegram»
+        # объясняет, КАК именно уведут аккаунт.
+        #
+        # Без этой оговорки форум с входом через ВК получал 57 баллов,
+        # а молодой стартап — 72, то есть «ОПАСНО». На поимку реального
+        # фишинга признак при этом не влиял никак: в том случае с угоном
+        # Telegram балл был 100 и с ним, и без него.
+        hard_evidence = bool(foreign_brands) or bool(page.cross_domain_form) or (
+            domain_age.checked and domain_age.age_days is not None
+            and domain_age.age_days < settings.DOMAIN_AGE_VERY_NEW
+        )
 
         if page.cross_domain_form:
             c.add("PAGE_CROSS_DOMAIN_FORM", Severity.DANGER,
@@ -318,25 +337,43 @@ def calculate_risk_score(
                   f"{page.cross_domain_form}",
                   weight_key="page_cross_domain_form")
 
-        # Бренд заявлен в тексте, но домен ему не принадлежит.
-        if page.brands_in_text and not lexical.is_trusted_domain:
-            from data.brands import BRAND_DOMAINS
-            foreign = [b for b in page.brands_in_text
-                       if lexical.registered_domain not in BRAND_DOMAINS.get(b, ())]
-            if foreign:
-                c.add("PAGE_BRAND_MISMATCH", Severity.DANGER,
-                      "Чужой бренд на странице",
-                      f"Страница выдаёт себя за «{', '.join(foreign)}», "
-                      f"но домен {shown_domain} этой компании "
-                      f"не принадлежит",
-                      weight_key="page_brand_mismatch")
+        if foreign_brands:
+            c.add("PAGE_BRAND_MISMATCH", Severity.DANGER,
+                  "Чужой бренд на странице",
+                  f"Страница выдаёт себя за «{', '.join(foreign_brands)}», "
+                  f"но домен {shown_domain} этой компании "
+                  f"не принадлежит",
+                  weight_key="page_brand_mismatch")
+
+        if page.messenger_login:
+            names = ", ".join(page.messenger_login)
+            if hard_evidence:
+                c.add("PAGE_MESSENGER_LOGIN", Severity.DANGER,
+                      "Вход через мессенджер",
+                      f"Страница предлагает войти через {names}. Именно так "
+                      f"угоняют аккаунты: вы подтверждаете вход, который "
+                      f"запустил не вы",
+                      weight_key="page_messenger_login")
+            else:
+                c.add("PAGE_MESSENGER_LOGIN_OK", Severity.INFO,
+                      "Вход через мессенджер",
+                      f"Страница предлагает войти через {names}. Так делают "
+                      f"и обычные сайты, поэтому сам по себе этот способ "
+                      f"входа ни о чём не говорит",
+                      weight=0)
 
         if page.has_password_field and not lexical.is_trusted_domain:
-            c.add("PAGE_PASSWORD_FORM", Severity.WARN, "Просит пароль",
-                  "На странице есть поле для пароля. Само по себе это "
-                  "нормально, но в сочетании с остальными признаками — "
-                  "повод не вводить ничего",
-                  weight_key="page_password_form")
+            if hard_evidence:
+                c.add("PAGE_PASSWORD_FORM", Severity.WARN, "Просит пароль",
+                      "На странице есть поле для пароля. Вместе с остальными "
+                      "признаками — повод не вводить ничего",
+                      weight_key="page_password_form")
+            else:
+                c.add("PAGE_PASSWORD_FORM_OK", Severity.INFO, "Просит пароль",
+                      "На странице есть поле для пароля — как на любой "
+                      "странице входа. Ничего подозрительного рядом с ним "
+                      "мы не нашли",
+                      weight=0)
 
         if page.hidden_input_count >= 3:
             c.add("PAGE_HIDDEN_INPUTS", Severity.INFO, "Скрытые поля в форме",

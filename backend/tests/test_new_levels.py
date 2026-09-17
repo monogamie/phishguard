@@ -185,9 +185,40 @@ def test_ct_rescues_unknown_domain_age():
     assert r.verdict != Verdict.SAFE
 
 
-def test_messenger_login_flagged():
-    r = _score(page=PageResult(checked=True, messenger_login=["telegram"]))
-    assert any(s.code == "PAGE_MESSENGER_LOGIN" for s in r.signals)
+def test_messenger_login_alone_costs_nothing():
+    """Вход через ВК или Telegram есть у множества нормальных сайтов.
+    Сам по себе он не улика: форум с таким входом получал 57 баллов,
+    молодой стартап — 72, то есть «ОПАСНО»."""
+    plain = _score()
+    r = _score(page=PageResult(checked=True, status_code=200,
+                               messenger_login=["vk"]))
+    assert r.risk_score == plain.risk_score
+    assert any(s.code == "PAGE_MESSENGER_LOGIN_OK" for s in r.signals)
+
+
+def test_messenger_login_counts_next_to_real_evidence():
+    """Рядом с чужим брендом он объясняет, КАК уведут аккаунт."""
+    r = _score(page=PageResult(checked=True, status_code=200,
+                               messenger_login=["telegram"],
+                               brands_in_text=["sberbank"]))
+    assert any(s.code == "PAGE_MESSENGER_LOGIN" and s.weight > 0
+               for s in r.signals)
+
+
+def test_password_field_alone_costs_nothing():
+    """Поле пароля есть на любой странице входа."""
+    plain = _score()
+    r = _score(page=PageResult(checked=True, status_code=200,
+                               has_password_field=True))
+    assert r.risk_score == plain.risk_score
+
+
+def test_password_field_counts_on_a_brand_new_domain():
+    r = _score(age=DomainAgeResult(checked=True, age_days=2),
+               page=PageResult(checked=True, status_code=200,
+                               has_password_field=True))
+    assert any(s.code == "PAGE_PASSWORD_FORM" and s.weight > 0
+               for s in r.signals)
 
 
 def test_cross_domain_form_flagged():

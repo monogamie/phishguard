@@ -74,6 +74,132 @@
         .sr-only { position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0; }
         details > summary { cursor:pointer;list-style:none; }
         details > summary::-webkit-details-marker { display:none; }
+
+        /* ── Мобильный интерфейс ──────────────────────────────────
+           Отдельный слой, а не подгонка настольного: на телефоне
+           нужна другая иерархия — сначала ответ словами, потом одна
+           причина, и только за кнопкой «Подробнее» баллы и веса.
+           Настольная вёрстка ниже этой ширины не показывается вовсе,
+           поэтому её правки сюда не протекают. */
+        /* Своё определение .hidden: мобильный слой не должен разваливаться,
+           если Tailwind с CDN не загрузился (нет сети, блокировка, CDN лёг).
+           Без этого скрытые блоки показывались бы пустыми. */
+        .hidden { display:none !important; }
+
+        #mobileApp { display:none; }
+
+        @media (max-width: 640px) {
+            body > .bg-glow, body > nav, body > main, body > footer { display:none !important; }
+            body { background:#0a0d12;overflow-x:hidden; }
+            #mobileApp {
+                display:block;position:fixed;inset:0;overflow-y:auto;
+                -webkit-overflow-scrolling:touch;background:#0a0d12;
+                padding:0 20px calc(88px + env(safe-area-inset-bottom)) 20px;
+            }
+            .m-screen { display:none;min-height:100%;flex-direction:column;
+                        padding-top:calc(16px + env(safe-area-inset-top)); }
+            .m-screen.on { display:flex; }
+            .m-top { display:flex;align-items:center;justify-content:space-between;
+                     min-height:56px;margin-bottom:28px; }
+            .m-logo { width:44px;height:44px;border-radius:50%;object-fit:cover;
+                      box-shadow:0 0 18px rgba(16,185,129,.45); }
+            .m-h1 { font-size:34px;line-height:1.08;font-weight:900;color:#fff;
+                    letter-spacing:-.02em;margin:0 0 12px; }
+            .m-h1.danger { color:#f2545b; } .m-h1.safe { color:#2dd4a7; }
+            .m-sub { font-size:16px;line-height:1.45;color:#8a94a6;margin:0 0 28px; }
+            .m-label { font-size:11px;font-weight:700;letter-spacing:.12em;
+                       color:#5c6679;margin:0 0 10px; }
+            .m-field { width:100%;min-height:150px;border-radius:18px;padding:18px;
+                       background:#111720;border:1px solid #1e2634;color:#e6ebf2;
+                       font-size:16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                       resize:none;outline:none;margin-bottom:16px; }
+            .m-field::placeholder { color:#4a5364;letter-spacing:.05em; }
+            .m-field:focus { border-color:#2dd4a7; }
+            .m-btn { display:block;width:100%;border-radius:999px;padding:17px 20px;
+                     font-size:17px;font-weight:700;cursor:pointer;border:1px solid transparent;
+                     margin-bottom:12px;text-align:center;transition:opacity .15s; }
+            .m-btn:active { opacity:.72; }
+            .m-btn.primary { background:#f7f9fc;color:#0a0d12;border-color:#f7f9fc; }
+            .m-btn.ghost { background:transparent;color:#c2cbd8;border-color:#232c3a; }
+            .m-btn.danger-ghost { background:rgba(242,84,91,.08);color:#f2545b;
+                                  border-color:rgba(242,84,91,.3); }
+            .m-btn:disabled { opacity:.5;cursor:default; }
+            .m-rule { height:1px;background:#1a212c;margin:28px 0 22px; }
+            .m-mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                      font-size:14px;word-break:break-all; }
+
+            .m-bar { height:6px;border-radius:999px;background:#1a212c;overflow:hidden;
+                     margin-bottom:26px; }
+            .m-bar i { display:block;height:100%;width:8%;background:#f7f9fc;
+                       border-radius:999px;transition:width .5s ease; }
+            .m-box { border-radius:16px;background:#111720;border:1px solid #1e2634;
+                     padding:16px 18px;margin-bottom:26px; }
+            .m-step { display:flex;align-items:center;gap:14px;padding:11px 0;
+                      font-size:16px;color:#4d5768; }
+            .m-step i { width:22px;height:22px;border-radius:50%;flex-shrink:0;
+                        border:2px solid #2a3442;background:transparent; }
+            .m-step.now { color:#fff;font-weight:700; }
+            .m-step.now i { border-color:#fff; }
+            .m-step.done { color:#7d8798; }
+            .m-step.done i { background:#3a4454;border-color:#3a4454; }
+
+            .m-badge { font-size:11px;font-weight:700;letter-spacing:.12em;
+                       padding:9px 14px;border-radius:10px;border:1px solid; }
+            .m-badge.safe { color:#2dd4a7;border-color:rgba(45,212,167,.4);
+                            background:rgba(45,212,167,.07); }
+            .m-badge.unv { color:#9aa4b4;border-color:#2a3442;background:#141b25; }
+            .m-mark { width:96px;height:96px;border-radius:50%;border:3px solid #f2545b;
+                      display:flex;align-items:center;justify-content:center;
+                      font-size:46px;font-weight:800;color:#f2545b;margin:22px auto 30px; }
+            .m-reason { border-radius:16px;padding:18px;font-size:17px;line-height:1.4;
+                        font-weight:700;margin-bottom:26px; }
+            .m-reason.safe { background:rgba(45,212,167,.09);color:#2dd4a7;
+                             border:1px solid rgba(45,212,167,.2); }
+            .m-reason.neutral { background:#111720;color:#e6ebf2;border:1px solid #1e2634; }
+            .m-reason.plain { background:transparent;border:none;padding:0;color:#b6c0ce;
+                              font-weight:400;font-size:17px; }
+            .m-todo { font-size:17px;line-height:1.45;color:#e6ebf2;margin:0 0 24px; }
+            .m-spacer { flex:1;min-height:20px; }
+
+            .m-ring { width:78px;height:78px;flex-shrink:0; }
+            .m-sig { border-radius:16px;background:#111720;border:1px solid #1e2634;
+                     padding:16px 18px;margin-bottom:12px;display:flex;gap:12px; }
+            .m-sig-dot { width:9px;height:9px;border-radius:50%;margin-top:7px;flex-shrink:0; }
+            .m-sig-w { font-family:ui-monospace,monospace;font-size:14px;font-weight:700;
+                       margin-left:auto;padding-left:10px;white-space:nowrap; }
+            .m-src { display:inline-block;font-family:ui-monospace,monospace;font-size:12px;
+                     color:#8a94a6;background:#111720;border:1px solid #1e2634;
+                     border-radius:9px;padding:8px 12px;margin:0 8px 8px 0; }
+
+            .m-row { display:flex;align-items:center;gap:12px;padding:15px 0;
+                     border-bottom:1px solid #161d27;cursor:pointer;text-align:left;
+                     background:none;border-left:none;border-right:none;border-top:none;
+                     width:100%; }
+            .m-row-dot { width:9px;height:9px;border-radius:50%;flex-shrink:0; }
+            .m-row-host { font-family:ui-monospace,monospace;font-size:14px;color:#e6ebf2;
+                          word-break:break-all;margin-bottom:3px; }
+            .m-row-meta { font-size:13px; }
+            .m-chev { margin-left:auto;color:#3f4857;flex-shrink:0; }
+            .m-empty { flex:1;display:flex;flex-direction:column;align-items:center;
+                       justify-content:center;gap:20px;color:#5c6679;font-size:17px;
+                       font-weight:600;text-align:center;padding:40px 0; }
+            .m-empty div { width:74px;height:74px;border-radius:20px;border:2px solid #232c3a; }
+
+            .m-tabs { position:fixed;left:0;right:0;bottom:0;display:flex;
+                      background:#0c1119;border-top:1px solid #161d27;
+                      padding-bottom:env(safe-area-inset-bottom);z-index:50; }
+            .m-tab { flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;
+                     padding:11px 0 13px;font-size:13px;font-weight:700;color:#5c6679;
+                     background:none;border:none;cursor:pointer; }
+            .m-tab i { width:26px;height:26px;border-radius:9px;border:2px solid #39424f; }
+            .m-tab.on { color:#fff; } .m-tab.on i { border-color:#fff; }
+            .m-lang { display:flex;border:1px solid #232c3a;border-radius:11px;overflow:hidden; }
+            .m-lang button { padding:10px 16px;font-size:13px;font-weight:700;
+                             background:transparent;color:#6b7687;border:none;cursor:pointer; }
+            .m-lang button.on { background:#1b2331;color:#fff; }
+            .m-link { background:none;border:none;color:#8a94a6;font-size:16px;
+                      cursor:pointer;padding:6px; }
+        }
     </style>
 </head>
 <body class="text-slate-300">
@@ -211,6 +337,142 @@
     <p>&copy; 2026 DetectorAnalizeAI. PhishGuard v1.1.0</p>
 </footer>
 
+<!-- ── Мобильный интерфейс ──────────────────────────────────────────
+     Показывается только на экранах уже 640px; настольная вёрстка при
+     этом скрыта целиком. Данные берутся из тех же функций проверки —
+     отличается подача, а не логика. Тексты подставляет applyLang(). -->
+<div id="mobileApp">
+
+    <!-- Экран 1: ввод -->
+    <section class="m-screen on" id="mScanScreen">
+        <div class="m-top">
+            <img src="logo.png" alt="PhishGuard" class="m-logo">
+            <div class="m-lang" role="group" aria-label="Язык интерфейса">
+                <button type="button" data-lang="ru" id="mBtnRu">RU</button>
+                <button type="button" data-lang="en" id="mBtnEn">EN</button>
+            </div>
+        </div>
+        <h1 class="m-h1" data-i18n="m_title">Проверка ссылок</h1>
+        <p class="m-sub" data-i18n="m_sub">Вставьте ссылку — узнаете, можно ли по ней переходить</p>
+        <label class="sr-only" for="mInput" data-i18n="m_ph">Вставьте ссылку сюда</label>
+        <textarea id="mInput" class="m-field" rows="4" autocomplete="off"
+                  autocapitalize="off" autocorrect="off" spellcheck="false"
+                  inputmode="url" data-i18n-ph="m_ph"
+                  placeholder="Вставьте ссылку сюда"></textarea>
+        <p id="mError" class="m-sub hidden" style="color:#f2545b;margin:-4px 0 14px"></p>
+        <button type="button" class="m-btn primary" id="mScanBtn" data-i18n="m_check">Проверить</button>
+        <button type="button" class="m-btn ghost" id="mPasteBtn" data-i18n="m_paste">Вставить из буфера</button>
+        <div id="mLastWrap" class="hidden">
+            <div class="m-rule"></div>
+            <p class="m-label" data-i18n="m_last">ПОСЛЕДНЯЯ ПРОВЕРКА</p>
+            <div id="mLast"></div>
+        </div>
+    </section>
+
+    <!-- Экран 2: идёт проверка -->
+    <section class="m-screen" id="mProgressScreen">
+        <div class="m-top">
+            <img src="logo.png" alt="" class="m-logo">
+            <div class="m-lang" role="group" aria-label="Язык интерфейса">
+                <button type="button" data-lang="ru">RU</button>
+                <button type="button" data-lang="en">EN</button>
+            </div>
+        </div>
+        <h1 class="m-h1" data-i18n="m_working">Проверяю ссылку</h1>
+        <p class="m-sub" id="mWorkSub" data-i18n="m_working_sub">Это займёт пару секунд</p>
+        <div class="m-bar"><i id="mBar"></i></div>
+        <div class="m-box">
+            <p class="m-label" style="margin-bottom:6px" data-i18n="m_checking_addr">ПРОВЕРЯЕТСЯ АДРЕС</p>
+            <p class="m-mono" id="mWorkUrl" style="color:#c2cbd8;margin:0"></p>
+        </div>
+        <div id="mSteps">
+            <div class="m-step" data-step="0"><i></i><span data-i18n="m_s1">Смотрю, куда ведёт ссылка</span></div>
+            <div class="m-step" data-step="1"><i></i><span data-i18n="m_s2">Сверяю с базами угроз</span></div>
+            <div class="m-step" data-step="2"><i></i><span data-i18n="m_s3">Узнаю возраст сайта</span></div>
+            <div class="m-step" data-step="3"><i></i><span data-i18n="m_s4">Читаю страницу</span></div>
+        </div>
+        <div style="height:22px"></div>
+        <button type="button" class="m-btn ghost" id="mCancelBtn" data-i18n="m_cancel">Отменить</button>
+        <div class="m-spacer"></div>
+    </section>
+
+    <!-- Экран 3: результат -->
+    <section class="m-screen" id="mResultScreen">
+        <div class="m-top">
+            <img src="logo.png" alt="" class="m-logo" id="mResLogo">
+            <span id="mResBadge" class="m-badge safe hidden"></span>
+            <button type="button" class="m-link hidden" id="mResClose" data-i18n="m_close">Закрыть</button>
+        </div>
+        <div id="mResMark" class="m-mark hidden">!</div>
+        <h1 class="m-h1" id="mResTitle"></h1>
+        <p class="m-reason" id="mResReason"></p>
+        <div id="mResTodoWrap">
+            <p class="m-label" data-i18n="m_todo">ЧТО ДЕЛАТЬ</p>
+            <p class="m-todo" id="mResTodo"></p>
+        </div>
+        <p class="m-label" data-i18n="m_addr">ПРОВЕРЕННЫЙ АДРЕС</p>
+        <p class="m-mono" id="mResUrl" style="color:#8a94a6;margin:0 0 8px"></p>
+        <div class="m-spacer"></div>
+        <button type="button" class="m-btn primary" id="mResMain"></button>
+        <button type="button" class="m-btn ghost" id="mResMore" data-i18n="m_more">Подробнее</button>
+    </section>
+
+    <!-- Экран 4: подробности -->
+    <section class="m-screen" id="mDetailsScreen">
+        <div class="m-top">
+            <button type="button" class="m-link" id="mDetBack" aria-label="Назад"
+                    style="font-size:22px;padding:0 10px 0 0">&#8592;</button>
+            <strong style="color:#fff;font-size:19px;font-weight:800"
+                    data-i18n="m_details">Подробности</strong>
+            <span style="width:32px"></span>
+        </div>
+        <div class="m-rule" style="margin:0 0 22px"></div>
+        <div style="display:flex;gap:18px;align-items:center;margin-bottom:30px">
+            <svg class="m-ring" viewBox="0 0 80 80" aria-hidden="true">
+                <circle cx="40" cy="40" r="34" fill="none" stroke="#1c2432" stroke-width="7"/>
+                <circle id="mDetRing" cx="40" cy="40" r="34" fill="none" stroke="#f2545b"
+                        stroke-width="7" stroke-linecap="round" stroke-dasharray="213.6"
+                        stroke-dashoffset="213.6" transform="rotate(-90 40 40)"/>
+                <text id="mDetScore" x="40" y="47" text-anchor="middle"
+                      font-size="24" font-weight="800" fill="#fff">0</text>
+            </svg>
+            <div>
+                <p id="mDetVerdict" style="font-size:19px;font-weight:800;margin:0 0 6px"></p>
+                <p id="mDetMeta" class="m-sub" style="font-size:14px;margin:0"></p>
+            </div>
+        </div>
+        <p class="m-label" data-i18n="m_fired">ЧТО СРАБОТАЛО</p>
+        <div id="mDetSignals" style="margin-bottom:26px"></div>
+        <p class="m-label" data-i18n="m_sources">ИСТОЧНИКИ</p>
+        <div id="mDetSources"></div>
+        <div style="height:24px"></div>
+    </section>
+
+    <!-- Экран 5: история -->
+    <section class="m-screen" id="mHistScreen">
+        <div class="m-top">
+            <img src="logo.png" alt="" class="m-logo">
+            <div class="m-lang" role="group" aria-label="Язык интерфейса">
+                <button type="button" data-lang="ru">RU</button>
+                <button type="button" data-lang="en">EN</button>
+            </div>
+        </div>
+        <h1 class="m-h1" style="font-size:30px" data-i18n="m_hist_h">История</h1>
+        <p class="m-sub" style="margin-bottom:18px" data-i18n="m_hist_sub">Хранится только на этом телефоне</p>
+        <button type="button" class="m-btn danger-ghost hidden" id="mHistClear"
+                data-i18n="m_hist_clear">Очистить историю</button>
+        <div id="mHistList"></div>
+        <div class="m-empty hidden" id="mHistEmpty">
+            <div></div><span data-i18n="m_hist_empty">Здесь появятся проверенные ссылки</span>
+        </div>
+    </section>
+
+    <nav class="m-tabs">
+        <button type="button" class="m-tab on" id="mTabScan"><i></i><span data-i18n="m_tab_scan">Проверка</span></button>
+        <button type="button" class="m-tab" id="mTabHist"><i></i><span data-i18n="m_tab_hist">История</span></button>
+    </nav>
+</div>
+
 <script>
 'use strict';
 /* ═══════════════════════════════════════════════════════════════════
@@ -321,7 +583,39 @@ const I18N = {
         tag_offline:'Сервер недоступен', tag_cached:'из кеша',
         tag_cert:'Сертификат', tag_page:'Страница прочитана',
         conf:'достоверность', score_of:'из 100',
-        redirect_to:'ведёт на',
+        m_title:'Проверка ссылок',
+        m_sub:'Вставьте ссылку — узнаете, можно ли по ней переходить',
+        m_ph:'Вставьте ссылку сюда',
+        m_check:'Проверить', m_paste:'Вставить из буфера',
+        m_last:'ПОСЛЕДНЯЯ ПРОВЕРКА',
+        m_working:'Проверяю ссылку', m_working_sub:'Это займёт пару секунд',
+        m_checking_addr:'ПРОВЕРЯЕТСЯ АДРЕС', m_cancel:'Отменить',
+        m_s1:'Смотрю, куда ведёт ссылка', m_s2:'Сверяю с базами угроз',
+        m_s3:'Узнаю возраст сайта', m_s4:'Читаю страницу',
+        m_danger_h:'Не переходите по этой ссылке',
+        m_susp_h:'С этой ссылкой что-то не так',
+        m_safe_h:'Явных признаков обмана нет',
+        m_unv_h:'Проверить не удалось',
+        m_todo:'ЧТО ДЕЛАТЬ',
+        m_todo_danger:'Не вводите на ней пароли и коды. Если уже вводили — смените пароль и завершите чужие сеансы в настройках аккаунта',
+        m_todo_susp:'Не вводите пароли и коды, пока не убедитесь, что сайт настоящий. Проверьте адрес по буквам',
+        m_todo_safe:'Всё равно будьте внимательны на незнакомых сайтах',
+        m_todo_unv:'Считайте ссылку незнакомой: не вводите пароли и попробуйте проверить позже',
+        m_unv_reason:'Часть источников не ответила. Это не значит, что ссылка безопасна',
+        m_addr:'ПРОВЕРЕННЫЙ АДРЕС',
+        m_more:'Подробнее', m_what:'Что делать дальше',
+        m_again:'Проверить другую ссылку', m_retry:'Попробовать снова',
+        m_close:'Закрыть', m_details:'Подробности',
+        m_score_of:'баллов из 100 —', m_threshold:'Порог опасного — 60. Достоверность',
+        m_fired:'ЧТО СРАБОТАЛО', m_sources:'ИСТОЧНИКИ',
+        m_nothing:'Ни один признак обмана не сработал',
+        m_tab_scan:'Проверка', m_tab_hist:'История',
+        m_hist_h:'История', m_hist_sub:'Хранится только на этом телефоне',
+        m_hist_clear:'Очистить историю', m_hist_empty:'Здесь появятся проверенные ссылки',
+        m_hist_confirm:'Удалить всю историю проверок?',
+        m_ago_now:'только что', m_ago_min:'мин. назад', m_ago_h:'ч. назад',
+        m_ago_yest:'вчера', m_ago_days:'дн. назад',
+        m_paste_fail:'Браузер не дал доступ к буферу — вставьте вручную',
     },
     en: {
         nav_api:'Team', nav_scanner:'Scanner',
@@ -356,7 +650,39 @@ const I18N = {
         tag_offline:'Server unavailable', tag_cached:'cached',
         tag_cert:'Certificate', tag_page:'Page fetched',
         conf:'confidence', score_of:'of 100',
-        redirect_to:'leads to',
+        m_title:'Link checker',
+        m_sub:'Paste a link — find out whether it is safe to open',
+        m_ph:'Paste the link here',
+        m_check:'Check', m_paste:'Paste from clipboard',
+        m_last:'LAST CHECK',
+        m_working:'Checking the link', m_working_sub:'This takes a couple of seconds',
+        m_checking_addr:'CHECKING ADDRESS', m_cancel:'Cancel',
+        m_s1:'Seeing where the link leads', m_s2:'Matching against threat databases',
+        m_s3:'Looking up the site age', m_s4:'Reading the page',
+        m_danger_h:'Do not open this link',
+        m_susp_h:'Something is off with this link',
+        m_safe_h:'No clear signs of fraud',
+        m_unv_h:'Could not check it',
+        m_todo:'WHAT TO DO',
+        m_todo_danger:'Do not enter passwords or codes. If you already did — change your password and end other sessions in your account settings',
+        m_todo_susp:'Do not enter passwords or codes until you are sure the site is genuine. Check the address letter by letter',
+        m_todo_safe:'Stay careful on unfamiliar sites anyway',
+        m_todo_unv:'Treat the link as unknown: do not enter passwords, and try again later',
+        m_unv_reason:'Some sources did not answer. That does not mean the link is safe',
+        m_addr:'CHECKED ADDRESS',
+        m_more:'Details', m_what:'What to do next',
+        m_again:'Check another link', m_retry:'Try again',
+        m_close:'Close', m_details:'Details',
+        m_score_of:'points out of 100 —', m_threshold:'Danger starts at 60. Confidence',
+        m_fired:'WHAT MATCHED', m_sources:'SOURCES',
+        m_nothing:'No sign of fraud matched',
+        m_tab_scan:'Check', m_tab_hist:'History',
+        m_hist_h:'History', m_hist_sub:'Stored on this phone only',
+        m_hist_clear:'Clear history', m_hist_empty:'Checked links will appear here',
+        m_hist_confirm:'Delete the whole check history?',
+        m_ago_now:'just now', m_ago_min:'min ago', m_ago_h:'h ago',
+        m_ago_yest:'yesterday', m_ago_days:'d ago',
+        m_paste_fail:'The browser denied clipboard access — paste manually',
     },
 };
 
@@ -425,9 +751,11 @@ const SIG = {
         CT_CONFIRMS:{t:'История домена', d:'Журналы сертификатов подтверждают возраст домена.'},
         CT_NO_RECORDS:{t:'Нет в журналах', d:'На домен никогда не выпускали сертификат.'},
         PAGE_MESSENGER_LOGIN:{t:'Вход через мессенджер', d:'Страница предлагает войти через мессенджер — так угоняют аккаунты.'},
+        PAGE_MESSENGER_LOGIN_OK:{t:'Вход через мессенджер', d:'Так делают и обычные сайты — сам по себе такой вход ни о чём не говорит.'},
         PAGE_CROSS_DOMAIN_FORM:{t:'Данные уходят на другой сайт', d:'Форма отправляет введённое на посторонний адрес.'},
         PAGE_BRAND_MISMATCH:{t:'Чужой бренд на странице', d:'Страница выдаёт себя за компанию, которой домен не принадлежит.'},
         PAGE_PASSWORD_FORM:{t:'Просит пароль', d:'На странице есть поле для пароля.'},
+        PAGE_PASSWORD_FORM_OK:{t:'Просит пароль', d:'Поле для пароля — как на любой странице входа. Ничего подозрительного рядом нет.'},
         PAGE_HIDDEN_INPUTS:{t:'Скрытые поля в форме', d:'Так передают метки кампании в массовых рассылках.'},
         PAGE_CLEAN:{t:'Содержимое страницы', d:'Форм для пароля и подозрительных кнопок входа нет.'},
         PAGE_NOT_SEEN:{t:'Страница не показана', d:'Сайт не отдал содержимое — проверить его не удалось.'},
@@ -491,9 +819,11 @@ const SIG = {
         CT_CONFIRMS:{t:'Domain history', d:'Certificate logs confirm the domain age.'},
         CT_NO_RECORDS:{t:'Not in logs', d:'No certificate was ever issued for this domain.'},
         PAGE_MESSENGER_LOGIN:{t:'Messenger login', d:'The page offers messenger login — that is how accounts get stolen.'},
+        PAGE_MESSENGER_LOGIN_OK:{t:'Messenger login', d:'Ordinary sites offer this too, so on its own it means nothing.'},
         PAGE_CROSS_DOMAIN_FORM:{t:'Data goes elsewhere', d:'The form submits what you type to a third-party address.'},
         PAGE_BRAND_MISMATCH:{t:'Foreign brand on page', d:'The page poses as a company that does not own this domain.'},
         PAGE_PASSWORD_FORM:{t:'Asks for a password', d:'The page contains a password field.'},
+        PAGE_PASSWORD_FORM_OK:{t:'Asks for a password', d:'A password field, like any login page. Nothing suspicious alongside it.'},
         PAGE_HIDDEN_INPUTS:{t:'Hidden form fields', d:'Used to carry campaign tags in mass mailings.'},
         PAGE_CLEAN:{t:'Page contents', d:'No password forms or suspicious login buttons.'},
         PAGE_NOT_SEEN:{t:'Page not shown', d:'The site did not return its contents, so it could not be checked.'},
@@ -1358,9 +1688,9 @@ function renderRedirects(redirects) {
     card.classList.remove('hidden');
 }
 
-function renderEngineTags(result) {
-    const box = $('engineTags');
-    clear(box);
+/* Список источников одной строкой. Вынесен отдельно от отрисовки:
+   телефон показывает те же теги, но своей вёрсткой. */
+function engineTagList(result) {
     const T = t();
     const tags = [];
 
@@ -1371,10 +1701,10 @@ function renderEngineTags(result) {
         tags.push(T.tag_backend);
         const d = result.raw && result.raw.details;
         if (d && d.threat_intel && d.threat_intel.checked) {
-            tags.push('Safe Browsing: ' + (d.threat_intel.is_threat ? '⚠' : 'ok'));
+            tags.push('Safe Browsing: ' + (d.threat_intel.is_threat ? '\u26a0' : 'ok'));
         }
         if (d && d.reputation && d.reputation.checked) {
-            tags.push('URLhaus: ' + ((d.reputation.url_listed || d.reputation.host_listed) ? '⚠' : 'ok'));
+            tags.push('URLhaus: ' + ((d.reputation.url_listed || d.reputation.host_listed) ? '\u26a0' : 'ok'));
         }
         if (d && d.domain_age && d.domain_age.age_days != null) {
             tags.push('RDAP: ' + d.domain_age.age_days + ' d');
@@ -1395,8 +1725,13 @@ function renderEngineTags(result) {
         tags.push(T.conf + ' ' + Math.round(result.confidence * 100) + '%');
     }
     if (result.cached) tags.push(T.tag_cached);
+    return tags;
+}
 
-    for (const text of tags) {
+function renderEngineTags(result) {
+    const box = $('engineTags');
+    clear(box);
+    for (const text of engineTagList(result)) {
         box.appendChild(el('span',
             'text-[10px] mono px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-400', text));
     }
@@ -1501,6 +1836,7 @@ async function startScan() {
     if (cached) {
         const result = applyConfidence(
             Object.assign({}, cached, { cached:true, verdict:verdictOf(cached.score) }));
+        histAdd(normalized, result);
         showInline(raw, result.verdict, result.level);
         renderResult(result);
         return;
@@ -1558,6 +1894,7 @@ async function startScan() {
 
     cacheSet(normalized, result);
     result = applyConfidence(result);
+    histAdd(normalized, result);
     showInline(raw, result.verdict, result.level);
     renderResult(result);
 }
@@ -1602,8 +1939,432 @@ function applyLang() {
     });
     ['btnRu','btnRuM'].forEach(id => { const n = $(id); if (n) n.classList.toggle('active', lang === 'ru'); });
     ['btnEn','btnEnM'].forEach(id => { const n = $(id); if (n) n.classList.toggle('active', lang === 'en'); });
+    document.querySelectorAll('.m-lang button[data-lang]').forEach(node => {
+        node.classList.toggle('on', node.dataset.lang === lang);
+    });
+    // Тексты результата подставлены не через data-i18n, а по данным,
+    // поэтому при смене языка их надо пересобрать.
+    if ($('mobileApp')) {
+        mRenderLast();
+        if ($('mHistScreen').classList.contains('on')) mRenderHistory();
+        if (mResult && $('mResultScreen').classList.contains('on')) {
+            mRenderResult(mResult, $('mResUrl').textContent);
+        }
+    }
 
     renderSamples();
+}
+
+/* ─── Мобильный интерфейс ──────────────────────────────────────────
+
+   Работает поверх тех же функций проверки, что и настольная версия:
+   scanViaBackend, engineLocal, applyConfidence, signalText. Отличается
+   только подача — сначала ответ словами и одна причина, баллы и веса
+   спрятаны за «Подробнее».
+
+   История лежит в localStorage и НИКУДА не отправляется. Пишется она и
+   при проверке с компьютера: хранилище общее, показывается пока только
+   на телефоне.
+*/
+
+const HIST_KEY = 'pg_history';
+const HIST_MAX = 50;
+const M_LEVEL_COLOR = { safe:'#2dd4a7', suspicious:'#f5a524', danger:'#f2545b',
+                        unverified:'#6b7687' };
+
+let mResult = null;        // последний показанный результат
+let mScanToken = 0;        // растёт при отмене — старый ответ отбрасываем
+
+function histRead() {
+    try {
+        const list = JSON.parse(localStorage.getItem(HIST_KEY) || '[]');
+        return Array.isArray(list) ? list : [];
+    } catch { return []; }
+}
+
+/* Подпись строки истории: домен и путь, но без схемы и без хвоста —
+   `ozon.ru/order/4471` человек узнаёт, а `https://ozon.ru/order/...`
+   в узкую строку не влезает. */
+function histLabel(url) {
+    const host = safeHost(url);
+    let path = '';
+    try {
+        const parsed = new URL(url);
+        path = parsed.pathname === '/' ? '' : parsed.pathname;
+    } catch {}
+    const label = host + path;
+    return label.length > 42 ? label.slice(0, 41) + '\u2026' : label;
+}
+
+function histAdd(url, result) {
+    try {
+        const list = histRead().filter(item => item.url !== url);
+        list.unshift({ url, host: histLabel(url), level: result.level,
+                       score: result.score, ts: Date.now() });
+        localStorage.setItem(HIST_KEY, JSON.stringify(list.slice(0, HIST_MAX)));
+    } catch {}     // приватный режим запрещает запись — молча живём без истории
+}
+
+function histClear() {
+    try { localStorage.removeItem(HIST_KEY); } catch {}
+}
+
+function timeAgo(ts) {
+    const T = t();
+    const min = Math.floor((Date.now() - ts) / 60000);
+    if (min < 1)    return T.m_ago_now;
+    if (min < 60)   return min + ' ' + T.m_ago_min;
+    const hours = Math.floor(min / 60);
+    if (hours < 24) return hours + ' ' + T.m_ago_h;
+    const days = Math.floor(hours / 24);
+    if (days === 1) return T.m_ago_yest;
+    return days + ' ' + T.m_ago_days;
+}
+
+function mVerdictWord(level) {
+    const T = t();
+    return level === 'danger' ? T.v_danger
+         : level === 'suspicious' ? T.v_susp
+         : level === 'unverified' ? T.v_unknown : T.v_safe;
+}
+
+function mGo(id) {
+    document.querySelectorAll('.m-screen').forEach(node => node.classList.remove('on'));
+    const screen = $(id);
+    if (screen) screen.classList.add('on');
+    const app = $('mobileApp');
+    if (app) app.scrollTop = 0;
+    const onHistory = (id === 'mHistScreen');
+    $('mTabScan').classList.toggle('on', !onHistory);
+    $('mTabHist').classList.toggle('on', onHistory);
+}
+
+/* Главная причина. Берём не самый тяжёлый признак, а самый понятный:
+   «страница выдаёт себя за Сбербанк» человеку говорит больше, чем
+   «домену 2 дня», хотя вес у второго выше. */
+const M_REASON_ORDER = [
+    'GSB_THREAT', 'URLHAUS_LISTED', 'URLHAUS_HOST',
+    'PAGE_BRAND_MISMATCH', 'BRAND_HOMOGRAPH', 'BRAND_TYPOSQUAT',
+    'BRAND_IMPERSONATION', 'PAGE_CROSS_DOMAIN_FORM', 'SCAM_PATTERN',
+    'PAGE_MESSENGER_LOGIN', 'DOMAIN_VERY_NEW', 'IP_IN_URL', 'AT_SYMBOL',
+    'MIXED_SCRIPTS', 'CERT_MISMATCH', 'DOMAIN_RECENT',
+];
+
+function mMainReason(result) {
+    const scored = (result.signals || []).filter(sig => sig.weight > 0);
+    if (!scored.length) return null;
+    for (const code of M_REASON_ORDER) {
+        const hit = scored.find(sig => sig.code === code);
+        if (hit) return hit;
+    }
+    return scored[0];
+}
+
+function mRenderResult(result, shownUrl) {
+    const T = t();
+    mResult = result;
+    const level = result.level;
+    const danger = (level === 'danger');
+
+    $('mResMark').classList.toggle('hidden', !danger);
+    $('mResClose').classList.toggle('hidden', !danger);
+    $('mResLogo').classList.toggle('hidden', danger);
+
+    const badge = $('mResBadge');
+    const showBadge = (level === 'safe' || level === 'unverified');
+    badge.classList.toggle('hidden', !showBadge);
+    if (showBadge) {
+        badge.textContent = mVerdictWord(level);
+        badge.className = 'm-badge ' + (level === 'safe' ? 'safe' : 'unv');
+    }
+
+    const title = $('mResTitle');
+    title.textContent = danger ? T.m_danger_h
+                      : level === 'suspicious' ? T.m_susp_h
+                      : level === 'unverified' ? T.m_unv_h : T.m_safe_h;
+    title.className = 'm-h1 ' + (danger ? 'danger' : level === 'safe' ? 'safe' : '');
+    if (danger) title.style.textAlign = 'center'; else title.style.textAlign = '';
+
+    const reason = $('mResReason');
+    if (level === 'unverified') {
+        reason.textContent = T.m_unv_reason;
+        reason.className = 'm-reason neutral';
+    } else {
+        const top = mMainReason(result);
+        // Пометку вида «[paypal]» показываем только в подробностях:
+        // в главной причине она читается как отладочный вывод.
+        reason.textContent = top
+            ? signalText(top).detail.replace(/\s*\[[^\]]*\]\s*$/, '')
+            : (level === 'safe' ? T.m_nothing : mVerdictWord(level));
+        reason.className = 'm-reason ' + (level === 'safe' ? 'safe'
+                                        : danger ? 'plain' : 'neutral');
+    }
+
+    $('mResTodo').textContent = danger ? T.m_todo_danger
+                              : level === 'suspicious' ? T.m_todo_susp
+                              : level === 'unverified' ? T.m_todo_unv : T.m_todo_safe;
+    $('mResUrl').textContent = shownUrl;
+
+    // На красном экране совет открывается по кнопке: первым делом человек
+    // должен увидеть «не переходите», а не абзац текста.
+    $('mResTodoWrap').classList.toggle('hidden', danger);
+
+    const main = $('mResMain');
+    main.textContent = danger ? T.m_what
+                     : level === 'unverified' ? T.m_retry : T.m_again;
+    main.dataset.action = danger ? 'todo' : level === 'unverified' ? 'retry' : 'again';
+
+    mGo('mResultScreen');
+}
+
+function mRenderDetails(result) {
+    const T = t();
+    const score = result.score || 0;
+    const color = M_LEVEL_COLOR[result.level] || M_LEVEL_COLOR.unverified;
+
+    $('mDetScore').textContent = score;
+    const ring = $('mDetRing');
+    ring.setAttribute('stroke', color);
+    ring.setAttribute('stroke-dashoffset',
+                      String(CIRCUMFERENCE * (1 - Math.min(score, 100) / 100)));
+
+    const verdict = $('mDetVerdict');
+    verdict.textContent = score + ' ' + T.m_score_of + ' ' + mVerdictWord(result.level).toLowerCase();
+    verdict.style.color = color;
+    $('mDetMeta').textContent = T.m_threshold + ' '
+        + (result.confidence != null ? Math.round(result.confidence * 100) + '%' : '—');
+
+    const box = $('mDetSignals');
+    clear(box);
+    const scored = (result.signals || []).filter(sig => sig.weight > 0);
+    if (!scored.length) {
+        box.appendChild(el('p', 'm-sub', T.m_nothing));
+    }
+    for (const sig of scored) {
+        const { title, detail } = signalText(sig);
+        const card = el('div', 'm-sig');
+        const dot = el('span', 'm-sig-dot');
+        dot.style.background = sig.severity === 'danger' ? '#f2545b'
+                             : sig.severity === 'warn' ? '#f5a524' : '#4b9fff';
+        card.appendChild(dot);
+        const body = el('div', '', '');
+        body.style.minWidth = '0';
+        const head = el('p', '', title);
+        head.style.cssText = 'color:#fff;font-weight:700;font-size:16px;margin:0 0 5px';
+        body.appendChild(head);
+        const text = el('p', 'm-sub', detail);
+        text.style.cssText = 'font-size:14px;margin:0;line-height:1.4';
+        body.appendChild(text);
+        card.appendChild(body);
+        const weight = el('span', 'm-sig-w', '+' + sig.weight);
+        weight.style.color = dot.style.background;
+        card.appendChild(weight);
+        box.appendChild(card);
+    }
+
+    const sources = $('mDetSources');
+    clear(sources);
+    for (const tag of engineTagList(result)) {
+        sources.appendChild(el('span', 'm-src', tag));
+    }
+    mGo('mDetailsScreen');
+}
+
+function mRenderHistory() {
+    const list = histRead();
+    const box = $('mHistList');
+    clear(box);
+    $('mHistEmpty').classList.toggle('hidden', list.length > 0);
+    $('mHistClear').classList.toggle('hidden', list.length === 0);
+
+    for (const item of list) {
+        const row = el('button', 'm-row');
+        row.type = 'button';
+        const dot = el('span', 'm-row-dot');
+        dot.style.background = M_LEVEL_COLOR[item.level] || M_LEVEL_COLOR.unverified;
+        row.appendChild(dot);
+
+        const body = el('div', '');
+        body.style.minWidth = '0';
+        body.appendChild(el('p', 'm-row-host', item.host || item.url));
+        const meta = el('p', 'm-row-meta',
+                        mVerdictWordShort(item.level) + ' · ' + timeAgo(item.ts));
+        meta.style.color = M_LEVEL_COLOR[item.level] || M_LEVEL_COLOR.unverified;
+        body.appendChild(meta);
+        row.appendChild(body);
+        row.appendChild(el('span', 'm-chev', '\u203A'));
+
+        row.addEventListener('click', () => {
+            $('mInput').value = item.url;
+            mGo('mScanScreen');
+            mStartScan();
+        });
+        box.appendChild(row);
+    }
+}
+
+function mVerdictWordShort(level) {
+    const word = mVerdictWord(level);
+    return word.charAt(0) + word.slice(1).toLowerCase();
+}
+
+function mRenderLast() {
+    const list = histRead();
+    const wrap = $('mLastWrap');
+    wrap.classList.toggle('hidden', list.length === 0);
+    const box = $('mLast');
+    clear(box);
+    if (!list.length) return;
+    const item = list[0];
+    const row = el('div', '');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px';
+    const dot = el('span', 'm-row-dot');
+    dot.style.background = M_LEVEL_COLOR[item.level] || M_LEVEL_COLOR.unverified;
+    row.appendChild(dot);
+    const host = el('span', 'm-mono', item.host || item.url);
+    host.style.cssText = 'color:#c2cbd8;flex:1;min-width:0';
+    row.appendChild(host);
+    const when = el('span', '', timeAgo(item.ts));
+    when.style.cssText = 'font-size:13px;color:#5c6679;white-space:nowrap';
+    row.appendChild(when);
+    box.appendChild(row);
+}
+
+function mSetStep(index) {
+    document.querySelectorAll('#mSteps .m-step').forEach(node => {
+        const step = Number(node.dataset.step);
+        node.classList.toggle('done', step < index);
+        node.classList.toggle('now', step === index);
+    });
+    $('mBar').style.width = Math.min(8 + index * 24, 92) + '%';
+}
+
+function mShowError(message) {
+    const box = $('mError');
+    box.textContent = message;
+    box.classList.remove('hidden');
+}
+
+async function mStartScan() {
+    const T = t();
+    const raw = $('mInput').value.trim();
+    $('mError').classList.add('hidden');
+
+    const validation = validateUrl(raw);
+    if (!validation.ok) { mShowError(validation.msg); return; }
+    const normalized = validation.url;
+
+    const cached = cacheGet(normalized);
+    if (cached) {
+        const result = applyConfidence(Object.assign({}, cached,
+            { cached:true, verdict:verdictOf(cached.score) }));
+        histAdd(normalized, result);
+        mRenderLast();
+        mRenderResult(result, raw);
+        return;
+    }
+
+    const token = ++mScanToken;
+    $('mWorkUrl').textContent = raw;
+    $('mWorkSub').textContent = T.m_working_sub;
+    mSetStep(0);
+    mGo('mProgressScreen');
+
+    // Шаги показываются по времени, а не по событиям: сервер делает все
+    // проверки разом и отвечает один раз, сообщать о ходе он не умеет.
+    // Поэтому последний шаг НЕ закрывается сам — он ждёт настоящего
+    // ответа, и полоска не добегает до конца раньше него. Если сервер
+    // спит (бесплатный Render просыпается до минуты), об этом честно
+    // пишем вместо молчаливого ожидания.
+    const timers = [
+        setTimeout(() => mSetStep(1), 700),
+        setTimeout(() => mSetStep(2), 1600),
+        setTimeout(() => mSetStep(3), 2800),
+        setTimeout(() => { $('mWorkSub').textContent = T.step_waking; }, 6000),
+        setTimeout(() => { $('mWorkSub').textContent = T.step_waking2; }, 25000),
+    ];
+
+    let result = null;
+    try {
+        result = await scanViaBackend(normalized);
+    } catch (err) {
+        if (String(err && err.message || err).startsWith('RATE_LIMIT:')) {
+            timers.forEach(clearTimeout);
+            if (token !== mScanToken) return;
+            mGo('mScanScreen');
+            mShowError(lang === 'ru'
+                ? 'Слишком много запросов. Повторите через минуту.'
+                : 'Too many requests. Try again in a minute.');
+            return;
+        }
+        result = engineLocal(normalized);
+    }
+    timers.forEach(clearTimeout);
+
+    // Пользователь нажал «Отменить», пока мы ждали — ответ выбрасываем.
+    if (token !== mScanToken) return;
+
+    if (!result) { mGo('mScanScreen'); mShowError(T.err_url); return; }
+
+    $('mBar').style.width = '100%';
+    cacheSet(normalized, result);
+    result = applyConfidence(result);
+    histAdd(normalized, result);
+    mRenderLast();
+    mRenderResult(result, raw);
+}
+
+function initMobile() {
+    if (!$('mobileApp')) return;
+
+    $('mScanBtn').addEventListener('click', mStartScan);
+    $('mInput').addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            mStartScan();
+        }
+    });
+
+    $('mPasteBtn').addEventListener('click', async () => {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text) { $('mInput').value = text.trim(); $('mError').classList.add('hidden'); }
+        } catch {
+            // Без жеста пользователя или по https-политике доступа не дают.
+            mShowError(t().m_paste_fail);
+        }
+    });
+
+    $('mCancelBtn').addEventListener('click', () => { mScanToken++; mGo('mScanScreen'); });
+    $('mResClose').addEventListener('click', () => mGo('mScanScreen'));
+    $('mDetBack').addEventListener('click', () => {
+        if (mResult) mGo('mResultScreen'); else mGo('mScanScreen');
+    });
+    $('mResMore').addEventListener('click', () => { if (mResult) mRenderDetails(mResult); });
+    $('mResMain').addEventListener('click', () => {
+        const action = $('mResMain').dataset.action;
+        if (action === 'retry') { mStartScan(); return; }
+        if (action === 'todo') {
+            $('mResTodoWrap').classList.remove('hidden');
+            $('mResMain').textContent = t().m_again;
+            $('mResMain').dataset.action = 'again';
+            return;
+        }
+        $('mInput').value = '';
+        mGo('mScanScreen');
+    });
+
+    $('mTabScan').addEventListener('click', () => mGo('mScanScreen'));
+    $('mTabHist').addEventListener('click', () => { mRenderHistory(); mGo('mHistScreen'); });
+    $('mHistClear').addEventListener('click', () => {
+        if (confirm(t().m_hist_confirm)) { histClear(); mRenderHistory(); mRenderLast(); }
+    });
+
+    document.querySelectorAll('.m-lang button[data-lang]').forEach(button => {
+        button.addEventListener('click', () => setLang(button.dataset.lang));
+    });
+
+    mRenderLast();
 }
 
 function setLang(value) {
@@ -1652,6 +2413,7 @@ $('urlInput').addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); startScan(); }
 });
 
+initMobile();
 applyLang();
 </script>
 </body>
