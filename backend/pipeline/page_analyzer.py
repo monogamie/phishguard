@@ -24,6 +24,7 @@ from config import settings
 from http_client import get_client
 from models import PageResult
 from net_guard import BlockedTargetError, assert_url_is_safe
+from url_resolver import REDIRECT_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,30 @@ _BRAND_TEXT: dict[str, str] = {
     "paypal": "paypal", "microsoft": "microsoft", "apple": "apple",
     "amazon": "amazon", "netflix": "netflix", "binance": "binance",
 }
+
+# По одному выражению на бренд, альтернативы — от длинной к короткой.
+# Длинная первой обязательна: иначе «сбербанк» посчитается дважды —
+# сам и как вложенное «сбер», и порог упоминаний для кириллицы
+# окажется вдвое ниже, чем для латиницы. Границы слова не дают
+# «сбережениям» стать Сбербанком, а «озонотерапии» — Ozon.
+_WORD_CHAR = r"0-9A-Za-z\u0400-\u04ff"
+
+
+def _brand_patterns() -> dict[str, re.Pattern[str]]:
+    by_brand: dict[str, list[str]] = {}
+    for needle, brand in _BRAND_TEXT.items():
+        by_brand.setdefault(brand, []).append(needle)
+    return {
+        brand: re.compile(
+            f"(?<![{_WORD_CHAR}])(?:"
+            + "|".join(re.escape(n) for n in sorted(needles, key=len, reverse=True))
+            + f")(?![{_WORD_CHAR}])",
+            re.IGNORECASE)
+        for brand, needles in by_brand.items()
+    }
+
+
+_BRAND_TEXT_RE = _brand_patterns()
 
 # Типы, которые точно не HTML. Всё остальное пробуем разобрать:
 # требовать text/html нельзя, поддельные страницы часто отдаются
@@ -158,8 +183,11 @@ def _cross_domain_form(page_url: str, actions: list[str]) -> Optional[str]:
     """
     own = _registrable(urlsplit(page_url).hostname or "")
     for action in actions:
-        target = urljoin(page_url, action.strip())
+        # urljoin внутри try: он сам зовёт urlsplit и бросает ValueError
+        # на битом action вида "//[" — одна такая форма на странице
+        # иначе валит весь уровень.
         try:
+            target = urljoin(page_url, action.strip())
             host = urlsplit(target).hostname
         except ValueError:
             continue
@@ -179,13 +207,8 @@ def _brands_in_text(text: str) -> list[str]:
     «Сбербанк» это не поддельный сайт Сбербанка, а вот страница, где
     он написан десять раз рядом с формой входа, — уже да.
     """
-    lowered = text.lower()
-    found: dict[str, int] = {}
-    for needle, brand in _BRAND_TEXT.items():
-        count = lowered.count(needle)
-        if count:
-            found[brand] = found.get(brand, 0) + count
-    return sorted(b for b, n in found.items() if n >= _BRAND_MENTION_THRESHOLD)
+    return sorted(brand for brand, pattern in _BRAND_TEXT_RE.items()
+                  if len(pattern.findall(text)) >= _BRAND_MENTION_THRESHOLD)
 
 
 async def analyze_page(url: str) -> PageResult:
@@ -196,51 +219,89 @@ async def analyze_page(url: str) -> PageResult:
     исход, скан продолжается по остальным уровням.
     """
     if not settings.PAGE_ENABLED:
-        return PageResult(checked=False, error="Уровень страницы выключен")
+        return PageResult(checked=False, skipped=True,
+                          error="Уровень страницы выключен")
 
     async def _fetch() -> PageResult:
-        try:
-            await assert_url_is_safe(
-                url, enabled=settings.BLOCK_PRIVATE_ADDRESSES,
-                dns_timeout=settings.DNS_TIMEOUT,
-            )
-        except BlockedTargetError as exc:
-            return PageResult(checked=False, error=str(exc))
+        # Редиректы разворачиваем сами. С follow_redirects=True httpx идёт
+        # по Location без наших проверок, и мошеннический сервер уводит
+        # запрос на внутренний адрес хостинга — это SSRF в обход net_guard.
+        current = url
+        seen = {url}
+        status: Optional[int] = None
+        raw = b""
+        encoding = "utf-8"
 
-        try:
-            async with get_client().stream(
-                "GET", url,
-                timeout=settings.PAGE_TIMEOUT,
-                follow_redirects=True,
-                headers={"Accept": "text/html,application/xhtml+xml"},
-            ) as resp:
-                status = resp.status_code
-                content_type = resp.headers.get("content-type", "").lower()
-                # Отсекаем только заведомо двоичное. Требовать text/html
-                # нельзя: мошеннические страницы часто отдаются с кривым
-                # или отсутствующим типом, и такую страницу мы потеряем.
-                if any(content_type.startswith(prefix) for prefix in _BINARY_TYPES):
-                    return PageResult(checked=False, status_code=status,
-                                      error=f"Не страница ({content_type[:40]})")
+        for _ in range(settings.MAX_REDIRECTS + 1):
+            try:
+                await assert_url_is_safe(
+                    current, enabled=settings.BLOCK_PRIVATE_ADDRESSES,
+                    dns_timeout=settings.DNS_TIMEOUT,
+                )
+            except BlockedTargetError as exc:
+                return PageResult(checked=False, status_code=status, error=str(exc))
 
-                chunks: list[bytes] = []
-                size = 0
-                async for chunk in resp.aiter_bytes():
-                    chunks.append(chunk)
-                    size += len(chunk)
-                    # Читаем только начало: формы и метатеги всегда в
-                    # первых килобайтах, а полная загрузка — подарок
-                    # тому, кто подсунет ссылку на гигабайтный файл.
-                    if size >= settings.PAGE_MAX_BYTES:
-                        break
-                raw = b"".join(chunks)[: settings.PAGE_MAX_BYTES]
-                encoding = resp.encoding or "utf-8"
-        except (httpx.TimeoutException, httpx.TransportError) as exc:
-            return PageResult(checked=False,
-                              error=f"Страница недоступна: {type(exc).__name__}")
-        except Exception:                              # noqa: BLE001
-            logger.exception("Page fetch failed for %s", url[:100])
-            return PageResult(checked=False, error="Ошибка загрузки страницы")
+            try:
+                async with get_client().stream(
+                    "GET", current,
+                    timeout=settings.PAGE_TIMEOUT,
+                    follow_redirects=False,
+                    headers={"Accept": "text/html,application/xhtml+xml"},
+                ) as resp:
+                    status = resp.status_code
+
+                    if status in REDIRECT_STATUSES:
+                        location = resp.headers.get("location")
+                        if not location:
+                            return PageResult(checked=False, status_code=status,
+                                              error="Редирект без адреса")
+                        try:
+                            target = urljoin(current, location.strip())
+                            scheme = urlsplit(target).scheme.lower()
+                        except ValueError:
+                            return PageResult(checked=False, status_code=status,
+                                              error="Некорректный адрес редиректа")
+                        if scheme not in ("http", "https"):
+                            return PageResult(checked=False, status_code=status,
+                                              error=f"Редирект на схему {scheme[:12]}")
+                        if target in seen:
+                            return PageResult(checked=False, status_code=status,
+                                              error="Циклический редирект")
+                        seen.add(target)
+                        current = target
+                        continue
+
+                    content_type = resp.headers.get("content-type", "").lower()
+                    # Отсекаем только заведомо двоичное. Требовать text/html
+                    # нельзя: мошеннические страницы часто отдаются с кривым
+                    # или отсутствующим типом, и такую страницу мы потеряем.
+                    if any(content_type.startswith(prefix) for prefix in _BINARY_TYPES):
+                        return PageResult(checked=False, status_code=status,
+                                          error=f"Не страница ({content_type[:40]})")
+
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in resp.aiter_bytes():
+                        chunks.append(chunk)
+                        size += len(chunk)
+                        # Читаем только начало: формы и метатеги всегда в
+                        # первых килобайтах, а полная загрузка — подарок
+                        # тому, кто подсунет ссылку на гигабайтный файл.
+                        if size >= settings.PAGE_MAX_BYTES:
+                            break
+                    raw = b"".join(chunks)[: settings.PAGE_MAX_BYTES]
+                    encoding = resp.encoding or "utf-8"
+                    break
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                return PageResult(checked=False, status_code=status,
+                                  error=f"Страница недоступна: {type(exc).__name__}")
+            except Exception:                              # noqa: BLE001
+                logger.exception("Page fetch failed for %s", current[:100])
+                return PageResult(checked=False, status_code=status,
+                                  error="Ошибка загрузки страницы")
+        else:
+            return PageResult(checked=False, status_code=status,
+                              error="Слишком много редиректов")
 
         try:
             html = raw.decode(encoding, errors="replace")
@@ -260,7 +321,7 @@ async def analyze_page(url: str) -> PageResult:
         except Exception:                              # noqa: BLE001
             # Битая разметка не должна ронять уровень: разбираем то,
             # что успели прочитать до ошибки.
-            logger.info("HTML parse interrupted for %s", url[:80])
+            logger.info("HTML parse interrupted for %s", current[:80])
 
         text = " ".join(parser.text_parts)
         messengers = [name for name, pattern in _MESSENGER_PATTERNS
@@ -269,10 +330,11 @@ async def analyze_page(url: str) -> PageResult:
         return PageResult(
             checked=True,
             status_code=status,
+            final_url=(current if current != url else None),
             title=(" ".join(parser.title_parts).strip() or None),
             has_password_field=parser.has_password,
             messenger_login=messengers,
-            cross_domain_form=_cross_domain_form(url, parser.form_actions),
+            cross_domain_form=_cross_domain_form(current, parser.form_actions),
             brands_in_text=_brands_in_text(text),
             hidden_input_count=parser.hidden_inputs,
             form_count=parser.form_count,

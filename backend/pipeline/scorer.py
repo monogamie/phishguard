@@ -77,18 +77,20 @@ def _confidence(gsb: ThreatIntelResult, reputation: ReputationResult,
                 ct: Optional[CtResult] = None,
                 page: Optional[PageResult] = None) -> float:
     """Доля ответивших источников: пользователь должен отличать
-    «проверено всеми, чисто» от «почти все недоступны»."""
+    «проверено всеми, чисто» от «почти все недоступны».
+
+    Уровни, пропущенные НАРОЧНО (доверенный домен, выключен в
+    настройках), в знаменатель не идут. Иначе шкала переворачивалась:
+    у google.com, где половину уровней гонять незачем, достоверность
+    выходила 0.62, а у неизвестного магазина — 1.0."""
     available = 1.0                       # лексика работает всегда
     total = 4.0
-    if ai is not None:
+    for extra in (ai, tls, ct, page):
+        if extra is None or getattr(extra, "skipped", False):
+            continue
         total += 1
-        if ai.checked:
+        if extra.checked:
             available += 1
-    for extra in (tls, ct, page):
-        if extra is not None:
-            total += 1
-            if extra.checked:
-                available += 1
     if gsb.checked:
         available += 1
     if reputation.checked:
@@ -241,7 +243,9 @@ def calculate_risk_score(
                 c.add("CERT_NEW", Severity.INFO, "Сертификат новый",
                       f"Сертификату {tls.age_days} дн.",
                       weight_key="cert_new")
-            else:
+            elif not tls.expired:
+                # Иначе в одном списке оказывались «просрочен» и
+                # «действующий» — балл верный, объяснение противоречивое.
                 c.ok("CERT_OK", "Сертификат",
                      f"Действующий сертификат, выпущен {tls.age_days} дн. назад"
                      + (f", издатель: {tls.issuer}" if tls.issuer else ""))
@@ -274,14 +278,27 @@ def calculate_risk_score(
                      f"В журналах сертификатов домен известен "
                      f"{ct.first_seen_days} дн.")
         elif ct.total_certs == 0 and lexical.scheme == "https":
+            # Именно `== 0`, не `not ct.total_certs`: None означает
+            # «ответ не дочитан», а не «сертификатов нет».
             c.add("CT_NO_RECORDS", Severity.INFO, "Нет в журналах сертификатов",
                   "На домен никогда не выпускали сертификат, хотя адрес "
                   "заявлен как https",
                   weight_key="ct_no_records")
         elif ct.first_seen_days is not None:
-            c.ok("CT_CONFIRMS", "История домена",
-                 f"Журналы сертификатов подтверждают: домен известен "
-                 f"{ct.first_seen_days} дн.")
+            if ct.first_seen_days < settings.DOMAIN_AGE_NEW:
+                # Зелёный сигнал про трёхдневный домен рядом с красным
+                # «домен только появился» читается как оправдание.
+                c.add("CT_FIRST_SEEN_NEW", Severity.INFO, "История домена",
+                      f"В журналах сертификатов домен известен всего "
+                      f"{ct.first_seen_days} дн.", weight=0)
+            else:
+                c.ok("CT_CONFIRMS", "История домена",
+                     f"Журналы сертификатов подтверждают: домен известен "
+                     f"{ct.first_seen_days} дн.")
+
+    # Домен для показа человеку: xn--форма верна технически, но
+    # «мвд.рф» читается, а «xn--b1aew.xn--p1ai» — нет.
+    shown_domain = lexical.decoded_host or lexical.registered_domain
 
     # ── Уровень 5: содержимое страницы ───────────────────────────
     if page is not None and page.checked:
@@ -310,7 +327,7 @@ def calculate_risk_score(
                 c.add("PAGE_BRAND_MISMATCH", Severity.DANGER,
                       "Чужой бренд на странице",
                       f"Страница выдаёт себя за «{', '.join(foreign)}», "
-                      f"но домен {lexical.registered_domain} этой компании "
+                      f"но домен {shown_domain} этой компании "
                       f"не принадлежит",
                       weight_key="page_brand_mismatch")
 
@@ -329,8 +346,16 @@ def calculate_risk_score(
 
         if not any([page.messenger_login, page.cross_domain_form,
                     page.has_password_field]):
-            c.ok("PAGE_CLEAN", "Содержимое страницы",
-                 "Форм для ввода паролей и подозрительных кнопок входа нет")
+            if page.status_code is not None and 200 <= page.status_code < 300:
+                c.ok("PAGE_CLEAN", "Содержимое страницы",
+                     "Форм для ввода паролей и подозрительных кнопок входа нет")
+            else:
+                # При 403 от бот-защиты мы видели заглушку, а не сайт.
+                # Говорить «форм нет» — успокаивать на пустом месте.
+                c.add("PAGE_NOT_SEEN", Severity.INFO, "Страница не показана",
+                      f"Сайт ответил кодом {page.status_code} — "
+                      f"настоящее содержимое проверить не удалось",
+                      weight=0)
 
     # ── Уровень 3: структура и лексика ───────────────────────────
     if lexical.has_ip_address:
@@ -367,10 +392,18 @@ def calculate_risk_score(
         c.ok("BRAND_CLEAN", "Имитация брендов", "Имитации известных брендов не обнаружено")
 
     if lexical.has_punycode and not (brand and brand.kind == "homograph"):
-        c.add("PUNYCODE", Severity.WARN, "Punycode (IDN)",
-              f"Домен закодирован как xn--… и отображается как "
-              f"«{lexical.decoded_host or lexical.host}»",
-              weight_key="punycode")
+        if lexical.idn_is_native:
+            # Национальный домен иначе не записать: `мвд.рф` — это
+            # всегда xn--. Балл здесь давал ложное «ОПАСНО» каждому
+            # домену в зоне .рф.
+            c.ok("PUNYCODE_NATIVE", "Национальный домен",
+                 f"Адрес записан как «{lexical.decoded_host or lexical.host}» — "
+                 f"для этой зоны это обычная запись, а не подмена")
+        else:
+            c.add("PUNYCODE", Severity.WARN, "Punycode (IDN)",
+                  f"Домен закодирован как xn--… и отображается как "
+                  f"«{lexical.decoded_host or lexical.host}»",
+                  weight_key="punycode")
 
     if lexical.has_mixed_scripts:
         c.add("MIXED_SCRIPTS", Severity.DANGER, "Смешение алфавитов",
@@ -498,7 +531,7 @@ def calculate_risk_score(
                         lexical.registered_domain, score, TRUSTED_DOMAIN_SCORE_CAP)
         score = min(score, TRUSTED_DOMAIN_SCORE_CAP)
         c.ok("TRUSTED_DOMAIN", "Репутация домена",
-             f"{lexical.registered_domain} — известный домен с проверенной репутацией")
+             f"{shown_domain} — известный домен с проверенной репутацией")
 
     # Правило 3: смягчение для неразвёрнутых сокращателей.
     if (lexical.is_shortener and redirects is not None
@@ -512,9 +545,10 @@ def calculate_risk_score(
     # зависел бы от порядка правил в коде, а не от значимости.
     c.signals.sort(key=lambda s: (-s.weight, s.code))
 
+    confidence = _confidence(gsb, reputation, domain_age, redirects,
+                             ai, tls, ct, page)
     logger.info("Score for %s: %d (%s), signals=%d, confidence=%.2f",
-                url, score, verdict.value, len(c.signals),
-                _confidence(gsb, reputation, domain_age, redirects, ai, tls, ct, page))
+                url, score, verdict.value, len(c.signals), confidence)
 
     details = {
         "threat_intel": gsb.model_dump(),
@@ -537,7 +571,7 @@ def calculate_risk_score(
         is_phishing=score >= settings.PHISHING_THRESHOLD,
         risk_score=score,
         verdict=verdict,
-        confidence=_confidence(gsb, reputation, domain_age, redirects, ai, tls, ct, page),
+        confidence=confidence,
         signals=c.signals,
         # reasons сохранён для обратной совместимости со старым фронтендом.
         reasons=[f"{s.title}: {s.detail}" for s in c.signals

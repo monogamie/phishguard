@@ -12,19 +12,19 @@ BRAND_DOMAINS: dict[str, frozenset[str]] = {
     "paypal":      frozenset({"paypal.com", "paypal.me", "paypalobjects.com"}),
     "google":      frozenset({
         "google.com", "google.ru", "google.co.uk", "google.de", "google.fr",
-        "googleapis.com", "googleusercontent.com", "gstatic.com",
+        "googleusercontent.com", "gstatic.com", "googleapis.com",
         "youtube.com", "youtu.be", "goo.gl", "withgoogle.com",
     }),
     "apple":       frozenset({"apple.com", "icloud.com", "apple.news", "cdn-apple.com"}),
     "amazon":      frozenset({
         "amazon.com", "amazon.co.uk", "amazon.de", "amazon.fr", "amazon.co.jp",
-        "amazonaws.com", "amazon.in", "primevideo.com",
+        "amazon.in", "primevideo.com", "amazonaws.com",
     }),
     "facebook":    frozenset({"facebook.com", "fb.com", "fbcdn.net", "messenger.com", "meta.com"}),
     "microsoft":   frozenset({
         "microsoft.com", "microsoftonline.com", "live.com", "outlook.com",
         "hotmail.com", "office.com", "office365.com", "azure.com",
-        "windows.com", "msn.com", "sharepoint.com", "xbox.com",
+        "windows.com", "msn.com", "xbox.com", "sharepoint.com",
     }),
     "netflix":     frozenset({"netflix.com", "nflxvideo.net"}),
     "tinkoff":     frozenset({"tinkoff.ru", "tbank.ru", "tinkoff.com"}),
@@ -62,9 +62,21 @@ BRAND_OWNED_DOMAINS: frozenset[str] = frozenset(
     d for domains in BRAND_DOMAINS.values() for d in domains
 )
 
+# ── Площадки, где страницу может выложить кто угодно ─────────────
+# Домены настоящих компаний, поэтому имперсонацией они НЕ считаются.
+# Но потолок доверия им не даём: файл в чужом бакете S3 или сайт на
+# поддомене арендатора — обычный способ разместить фишинг так, чтобы
+# он лежал на «приличном» домене. С потолком такая страница получала
+# бы «БЕЗОПАСНО» навсегда, сколько улик на ней ни найди.
+# Поддомены остальных изолирует приватная часть PSL — см.
+# _extract_trust в pipeline/lexical_analyzer.py.
+MULTI_TENANT_DOMAINS: frozenset[str] = frozenset({
+    "amazonaws.com", "googleapis.com", "sharepoint.com", "wordpress.com",
+})
+
 # ── Доверенные регистрируемые домены (eTLD+1) ────────────────────
 # Сюда попадают сайты, для которых мы ограничиваем итоговый балл.
-TRUSTED_DOMAINS: frozenset[str] = BRAND_OWNED_DOMAINS | frozenset({
+TRUSTED_DOMAINS: frozenset[str] = (BRAND_OWNED_DOMAINS | frozenset({
     # поиск / соцсети / медиа
     "wikipedia.org", "wikimedia.org", "twitter.com", "x.com", "reddit.com",
     "twitch.tv", "discord.com", "discord.gg", "ok.ru", "rutube.ru",
@@ -79,16 +91,17 @@ TRUSTED_DOMAINS: frozenset[str] = BRAND_OWNED_DOMAINS | frozenset({
     "iana.org", "icann.org", "ietf.org",
     # сервисы
     "zoom.us", "slack.com", "figma.com", "notion.so", "trello.com",
-    "atlassian.com", "salesforce.com", "adobe.com", "wordpress.com",
+    "atlassian.com", "salesforce.com", "adobe.com",
     "medium.com", "openai.com", "anthropic.com", "claude.ai",
     "epicgames.com", "roblox.com", "minecraft.net", "ea.com",
     "aliexpress.com", "ebay.com", "booking.com", "airbnb.com",
     "skype.com", "viber.com", "signal.org",
-})
+})) - MULTI_TENANT_DOMAINS
 
 __all__ = [
     "BRAND_DOMAINS",
     "BRAND_OWNED_DOMAINS",
     "TRUSTED_DOMAINS",
+    "MULTI_TENANT_DOMAINS",
     "MIN_SUBSTRING_BRAND_LEN",
 ]

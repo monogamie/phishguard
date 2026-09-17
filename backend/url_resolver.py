@@ -18,7 +18,7 @@ from net_guard import BlockedTargetError, assert_url_is_safe
 
 logger = logging.getLogger(__name__)
 
-_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
 def _registrable_host(url: str) -> str:
@@ -112,7 +112,7 @@ async def resolve_final_url(url: str) -> RedirectInfo:
                 info.error = "Сайт не отвечает"
             break
 
-        if resp.status_code not in _REDIRECT_STATUSES:
+        if resp.status_code not in REDIRECT_STATUSES:
             info.resolved = True
             break
 

@@ -185,13 +185,16 @@ async def analyze_with_ai(url: str, lexical: LexicalFeatures) -> AiVerdictResult
     по остальным четырём источникам.
     """
     if not settings.AI_ENABLED:
-        return AiVerdictResult(checked=False, error="Уровень AI выключен в настройках")
+        return AiVerdictResult(checked=False, skipped=True,
+                               error="Уровень AI выключен в настройках")
     if not settings.ANTHROPIC_API_KEY:
-        return AiVerdictResult(checked=False, error="ANTHROPIC_API_KEY не задан")
+        return AiVerdictResult(checked=False, skipped=True,
+                               error="ANTHROPIC_API_KEY не задан")
 
     # Доверенные домены не отправляем: платно и бессмысленно.
     if lexical.is_trusted_domain:
-        return AiVerdictResult(checked=False, error="Доверенный домен — проверка не нужна")
+        return AiVerdictResult(checked=False, skipped=True,
+                               error="Доверенный домен — проверка не нужна")
 
     client = _get_client()
     if client is None:

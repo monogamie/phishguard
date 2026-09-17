@@ -108,11 +108,12 @@ def _is_self_signed(cert: dict[str, Any]) -> bool:
 async def check_tls(url: str) -> TlsResult:
     """Забирает сертификат и описывает его. Ошибки не выбрасываются."""
     if not settings.TLS_ENABLED:
-        return TlsResult(checked=False, error="Уровень TLS выключен")
+        return TlsResult(checked=False, skipped=True, error="Уровень TLS выключен")
 
     parts = urlsplit(url)
     if parts.scheme.lower() != "https":
-        return TlsResult(checked=False, error="Адрес не использует https")
+        return TlsResult(checked=False, skipped=True,
+                         error="Адрес не использует https")
 
     try:
         host = parts.hostname

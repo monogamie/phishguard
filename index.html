@@ -319,6 +319,7 @@ const I18N = {
         unverified_text:'Базы угроз и дата регистрации домена недоступны — проверить удалось только структуру адреса. Это НЕ значит, что ссылка безопасна. Не вводите на ней пароли и коды.',
         tag_backend:'Сервер: ✓', tag_local:'Локальный анализ',
         tag_offline:'Сервер недоступен', tag_cached:'из кеша',
+        tag_cert:'Сертификат', tag_page:'Страница прочитана',
         conf:'достоверность', score_of:'из 100',
         redirect_to:'ведёт на',
     },
@@ -353,6 +354,7 @@ const I18N = {
         unverified_text:'Threat databases and domain age are unavailable — only the address structure could be checked. This does NOT mean the link is safe. Do not enter passwords or codes on it.',
         tag_backend:'Server: ✓', tag_local:'Local analysis',
         tag_offline:'Server unavailable', tag_cached:'cached',
+        tag_cert:'Certificate', tag_page:'Page fetched',
         conf:'confidence', score_of:'of 100',
         redirect_to:'leads to',
     },
@@ -386,6 +388,7 @@ const SIG = {
         BRAND_IMPERSONATION:{t:'Чужой бренд в домене', d:'Имя бренда использовано в домене, который бренду не принадлежит.'},
         BRAND_CLEAN:{t:'Имитация брендов', d:'Имитации известных брендов не обнаружено.'},
         PUNYCODE:{t:'Punycode (IDN)', d:'Домен закодирован как xn--… и отображается иначе, чем записан.'},
+        PUNYCODE_NATIVE:{t:'Национальный домен', d:'Для этой зоны такая запись обычная, а не подмена.'},
         MIXED_SCRIPTS:{t:'Смешение алфавитов', d:'В одном слове домена символы разных алфавитов — признак подмены.'},
         NON_ASCII_HOST:{t:'Не-ASCII в домене', d:'Домен содержит символы вне латиницы.'},
         ENCODED_HOST:{t:'Кодирование в домене', d:'В доменной части использовано процентное кодирование (%XX).'},
@@ -427,6 +430,7 @@ const SIG = {
         PAGE_PASSWORD_FORM:{t:'Просит пароль', d:'На странице есть поле для пароля.'},
         PAGE_HIDDEN_INPUTS:{t:'Скрытые поля в форме', d:'Так передают метки кампании в массовых рассылках.'},
         PAGE_CLEAN:{t:'Содержимое страницы', d:'Форм для пароля и подозрительных кнопок входа нет.'},
+        PAGE_NOT_SEEN:{t:'Страница не показана', d:'Сайт не отдал содержимое — проверить его не удалось.'},
         HTTPS_OK:{t:'Протокол', d:'Соединение шифруется (HTTPS).'},
         ASCII_OK:{t:'Символы', d:'Только стандартные латинские символы.'},
         TLD_OK:{t:'Зона', d:'Обычная доменная зона.'},
@@ -450,6 +454,7 @@ const SIG = {
         BRAND_IMPERSONATION:{t:'Brand in foreign domain', d:'A brand name used in a domain the brand does not own.'},
         BRAND_CLEAN:{t:'Brand impersonation', d:'No brand impersonation detected.'},
         PUNYCODE:{t:'Punycode (IDN)', d:'Encoded as xn--… and displays differently from how it is written.'},
+        PUNYCODE_NATIVE:{t:'National domain', d:'Normal spelling for this zone, not a look-alike.'},
         MIXED_SCRIPTS:{t:'Mixed scripts', d:'One domain label mixes alphabets — a substitution marker.'},
         NON_ASCII_HOST:{t:'Non-ASCII in domain', d:'The domain contains non-Latin characters.'},
         ENCODED_HOST:{t:'Encoding in domain', d:'Percent-encoding (%XX) used in the host part.'},
@@ -491,6 +496,7 @@ const SIG = {
         PAGE_PASSWORD_FORM:{t:'Asks for a password', d:'The page contains a password field.'},
         PAGE_HIDDEN_INPUTS:{t:'Hidden form fields', d:'Used to carry campaign tags in mass mailings.'},
         PAGE_CLEAN:{t:'Page contents', d:'No password forms or suspicious login buttons.'},
+        PAGE_NOT_SEEN:{t:'Page not shown', d:'The site did not return its contents, so it could not be checked.'},
         HTTPS_OK:{t:'Protocol', d:'Connection is encrypted (HTTPS).'},
         ASCII_OK:{t:'Characters', d:'Standard Latin characters only.'},
         TLD_OK:{t:'Zone', d:'Ordinary domain zone.'},
@@ -632,6 +638,25 @@ function mixedScripts(label) {
     const cyrillic = /[Ѐ-ӿ]/.test(label);
     const greek    = /[Ͱ-Ͽ]/.test(label);
     return (latin && cyrillic) || (latin && greek) || (cyrillic && greek);
+}
+
+function nativeIdn(displayHost) {
+    // `мвд.рф` нельзя записать иначе как punycode, поэтому сам факт
+    // xn-- здесь не улика. Признак «родного» IDN: и имя, и зона —
+    // одна и та же нелатинская письменность. Кириллица под .com
+    // остаётся подозрительной: она прячется под латиницу.
+    const labels = displayHost.split('.').filter(Boolean);
+    if (labels.length < 2) return false;
+    const script = label => ({
+        latin:    /[a-z]/i.test(label),
+        cyrillic: /[\u0400-\u04ff]/.test(label),
+        greek:    /[\u0370-\u03ff]/.test(label),
+    });
+    const tld  = script(labels[labels.length - 1]);
+    const name = script(labels.slice(0, -1).join(''));
+    if (tld.latin || (!tld.cyrillic && !tld.greek)) return false;
+    return (tld.cyrillic && name.cyrillic && !name.latin)
+        || (tld.greek    && name.greek    && !name.latin);
 }
 
 function levenshtein(a, b, max) {
@@ -988,11 +1013,14 @@ function engineLocal(rawInput) {
 
     // Punycode и смешение алфавитов.
     if (host.includes('xn--') && !(brand && brand.kind === 'homograph')) {
-        add('PUNYCODE', 'warn', W.punycode, host + ' \u2192 ' + displayHost);
+        if (nativeIdn(displayHost)) ok('PUNYCODE_NATIVE');
+        else add('PUNYCODE', 'warn', W.punycode, host + ' \u2192 ' + displayHost);
     }
     if (displayHost.split('.').some(mixedScripts)) {
         add('MIXED_SCRIPTS', 'danger', W.mixed_scripts, displayHost);
-    } else if (hasNonAscii(displayHost)) {
+    } else if (hasNonAscii(displayHost) && !nativeIdn(displayHost)) {
+        // Для .рф кириллица в имени — норма, а не признак подмены.
+        // Без этой оговорки сервер давал мвд.рф 0 баллов, а страница 35.
         add('NON_ASCII_HOST', 'warn', W.non_ascii_host, displayHost);
     } else if (!isIp) {
         ok('ASCII_OK');
@@ -1035,9 +1063,12 @@ function engineLocal(rawInput) {
     // Структурные аномалии.
     const meaningfulSubs = subs.filter(s => s !== 'www');
     if (meaningfulSubs.length > 3) add('EXCESSIVE_SUBDOMAINS', 'warn', W.excessive_subdomains, meaningfulSubs.length);
-    if (sld.length > 35)           add('LONG_DOMAIN', 'info', W.long_domain, sld.length);
+    if (displaySld.length > 35)    add('LONG_DOMAIN', 'info', W.long_domain, displaySld.length);
 
-    const hyphens = (host.match(/-/g) || []).length;
+    // Считаем по displayHost: в `xn--` дефисы и цифры появляются от
+    // самой кодировки, а в имени домена их нет. Из-за этого каждый
+    // домен .рф получал «много дефисов» и «цифры в домене».
+    const hyphens = (displayHost.match(/-/g) || []).length;
     if (hyphens > 3)               add('EXCESSIVE_HYPHENS', 'warn', W.excessive_hyphens, hyphens);
 
     const urlLen = String(rawInput).trim().length;
@@ -1051,16 +1082,16 @@ function engineLocal(rawInput) {
     // на google.com это нормальная страница входа.
     if (!isTrusted) {
         KEYWORD_RE.lastIndex = 0;
-        const found = [...new Set((path + ' ' + host).toLowerCase().match(KEYWORD_RE) || [])].sort();
+        const found = [...new Set((path + ' ' + displayHost).toLowerCase().match(KEYWORD_RE) || [])].sort();
         if (found.length) {
             const many = found.length >= 2;
             add('TRIGGER_KEYWORDS', many ? 'warn' : 'info',
                 many ? W.trigger_keywords_many : W.trigger_keywords, found.slice(0, 6).join(', '));
         }
-        if (/\d/.test(sld)) add('DIGITS_IN_DOMAIN', 'info', W.digits_in_domain, '');
+        if (/\d/.test(displaySld)) add('DIGITS_IN_DOMAIN', 'info', W.digits_in_domain, '');
 
         // Связка слов, повторяющая известную схему обмана.
-        const scam = matchScamPattern(path + ' ' + host);
+        const scam = matchScamPattern(path + ' ' + displayHost);
         if (scam) {
             add('SCAM_PATTERN', 'danger', W.scam_pattern,
                 (SCAM_LABELS[lang] || SCAM_LABELS.ru)[scam]);
@@ -1349,10 +1380,10 @@ function renderEngineTags(result) {
             tags.push('RDAP: ' + d.domain_age.age_days + ' d');
         }
         if (d && d.tls && d.tls.checked && d.tls.age_days != null) {
-            tags.push('Сертификат: ' + d.tls.age_days + ' d');
+            tags.push(T.tag_cert + ': ' + d.tls.age_days + ' d');
         }
         if (d && d.page && d.page.checked) {
-            tags.push('Страница: прочитана');
+            tags.push(T.tag_page);
         }
         if (d && d.ai && d.ai.checked) {
             const sign = d.ai.delta > 0 ? '+' : '';

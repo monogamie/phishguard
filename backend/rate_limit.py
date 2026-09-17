@@ -70,8 +70,15 @@ def client_identifier(request: Request) -> str:
     if settings.TRUST_PROXY_HEADERS:
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
-            # Первый в списке — клиент, остальные — цепочка прокси.
-            return forwarded.split(",")[0].strip()
+            # Берём адрес СПРАВА, а не слева. X-Forwarded-For прокси
+            # дописывают в конец, поэтому левые значения подставляет сам
+            # клиент: с первым элементом лимит обходится одной строкой
+            # `curl -H "X-Forwarded-For: 1.2.3.$RANDOM"`.
+            # TRUSTED_PROXY_HOPS — сколько прокси стоит перед нами.
+            chain = [part.strip() for part in forwarded.split(",") if part.strip()]
+            if chain:
+                index = min(settings.TRUSTED_PROXY_HOPS, len(chain))
+                return chain[-index]
         real_ip = request.headers.get("x-real-ip")
         if real_ip:
             return real_ip.strip()

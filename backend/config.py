@@ -196,6 +196,11 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS: int = 30          # запросов
     RATE_LIMIT_WINDOW: int = 60            # за столько секунд
     TRUST_PROXY_HEADERS: bool = True       # читать X-Forwarded-For (Render/Railway)
+    # Сколько прокси стоит перед приложением. Клиент — это адрес,
+    # который дописал НАШ прокси, то есть N-й с конца цепочки.
+    # Завысить опаснее, чем занизить: лишний шаг влево — это значение,
+    # подставленное клиентом, и лимит перестаёт работать.
+    TRUSTED_PROXY_HOPS: int = 1
 
     # ── Веса ────────────────────────────────────────────────────
     WEIGHTS: dict[str, int] = Field(default_factory=lambda: dict(DEFAULT_WEIGHTS))

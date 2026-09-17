@@ -218,9 +218,17 @@ def test_password_form_not_flagged_on_trusted_domain():
 
 
 def test_clean_page_is_an_ok_signal():
-    r = _score(page=PageResult(checked=True))
+    r = _score(page=PageResult(checked=True, status_code=200))
     assert any(s.code == "PAGE_CLEAN" and s.severity == Severity.OK
                for s in r.signals)
+
+
+def test_page_behind_bot_protection_is_not_called_clean():
+    """403 от бот-защиты — это заглушка, а не «форм нет»."""
+    r = _score(page=PageResult(checked=True, status_code=403,
+                               title="Access denied"))
+    assert not any(s.code == "PAGE_CLEAN" for s in r.signals)
+    assert any(s.code == "PAGE_NOT_SEEN" for s in r.signals)
 
 
 def test_unavailable_levels_do_not_change_score():
@@ -246,3 +254,121 @@ def test_new_results_land_in_details():
     assert r.details["tls"]["age_days"] == 5
     assert r.details["ct"]["total_certs"] == 7
     assert r.details["page"]["form_count"] == 2
+
+
+# ── Регрессии по ревью от 17 сентября ────────────────────────────
+
+def test_ct_truncated_response_is_not_no_records():
+    """Домен с десятками тысяч сертификатов — самый зрелый, а не
+    «сертификат не выпускали ни разу». Раньше обрезанный по размеру
+    ответ crt.sh давал ровно обратный вывод."""
+    truncated = CtResult(checked=True, first_seen_days=None,
+                         error="Слишком много сертификатов (домен с историей)")
+    assert truncated.total_certs is None
+    r = _score(ct=truncated)
+    assert not any(s.code == "CT_NO_RECORDS" for s in r.signals)
+
+    # А честный ответ «ноль» признак по-прежнему даёт.
+    zero = _score(ct=CtResult(checked=True, total_certs=0))
+    assert any(s.code == "CT_NO_RECORDS" for s in zero.signals)
+
+
+def test_expired_cert_is_not_also_called_valid():
+    r = _score(tls=TlsResult(checked=True, age_days=800, expired=True,
+                             issuer="Let's Encrypt", covers_domain=True))
+    codes = {s.code for s in r.signals}
+    assert "CERT_EXPIRED" in codes
+    assert "CERT_OK" not in codes
+
+
+def test_fresh_domain_gets_no_reassuring_ct_signal():
+    """Зелёное «домен известен 3 дн.» рядом с красным «домен только
+    появился» читается как оправдание."""
+    r = _score(age=DomainAgeResult(checked=True, age_days=3),
+               ct=CtResult(checked=True, first_seen_days=3, total_certs=1))
+    assert not any(s.code == "CT_CONFIRMS" for s in r.signals)
+
+
+def test_deliberate_skip_does_not_lower_confidence():
+    """Уровни, пропущенные нарочно, не должны выглядеть как упавшие:
+    у доверенного домена достоверность выходила ниже, чем у случайного."""
+    skipped = _score(ct=CtResult(checked=False, skipped=True, error="пропущено"),
+                     page=PageResult(checked=False, skipped=True, error="пропущено"))
+    failed = _score(ct=CtResult(checked=False, error="журналы недоступны"),
+                    page=PageResult(checked=False, error="страница недоступна"))
+    assert skipped.confidence == 1.0
+    assert failed.confidence < skipped.confidence
+
+
+def test_broken_form_action_does_not_kill_the_level():
+    """`<form action="//[">` заставляет urljoin бросить ValueError.
+    Раньше он летел из уровня целиком, и мошеннику хватало одной
+    пустой формы, чтобы страница вообще не проверялась."""
+    p = _parse('<form action="//["></form>'
+               '<form action="https://collector.top/x"></form>')
+    target = pa._cross_domain_form("https://shop.ru/", p.form_actions)
+    assert target and "collector.top" in target
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Порог одинаков для латиницы и кириллицы: раньше «сбербанк»
+    # считался дважды (сам и как вложенное «сбер»), и двух упоминаний
+    # хватало, тогда как для «tinkoff» требовалось три.
+    ("Сбербанк повысил ставку. Сбербанк сообщил.", []),
+    ("Tinkoff raised rates. Tinkoff said so.", []),
+    # Границы слова: обычные русские слова — не бренды.
+    ("Сбережения, сберегательный счёт, сберкнижка", []),
+    ("Озонотерапия, озонотерапия, озонирование", []),
+    (["ozon"], ["ozon"]),
+])
+def test_brand_text_matching_has_word_boundaries(text, expected):
+    if isinstance(text, list):
+        text = " ".join(f"{w} страница {w} вход {w}" for w in text)
+    assert pa._brands_in_text(text) == expected
+
+
+async def test_page_redirect_to_blocked_address_is_not_followed(monkeypatch):
+    """
+    Главная дыра из ревью: уровень страницы шёл по Location сам,
+    через httpx, и проверка SSRF применялась только к первому адресу.
+    Мошеннический сервер отвечал `302 Location: http://169.254.169.254/`
+    и мы читали внутренний сервис хостинга, а его заголовок уходил
+    клиенту в details.page.title.
+    """
+    checked: list[str] = []
+
+    async def spy(url, **kw):
+        checked.append(url)
+        if "169.254.169.254" in url:
+            raise pa.BlockedTargetError("внутренний адрес заблокирован")
+
+    class FakeResponse:
+        status_code = 302
+        headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+        encoding = "utf-8"
+
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def aiter_bytes(self):                    # pragma: no cover
+            raise AssertionError("тело редиректа читать не должны")
+
+    requested: list[str] = []
+
+    class FakeClient:
+        def stream(self, method, url, **kw):
+            requested.append(url)
+            assert kw["follow_redirects"] is False, \
+                "httpx не должен ходить по редиректам сам"
+            return FakeResponse()
+
+    monkeypatch.setattr(pa, "assert_url_is_safe", spy)
+    monkeypatch.setattr(pa, "get_client", lambda: FakeClient())
+    monkeypatch.setattr(pa._cache, "_data", {})
+
+    r = await pa.analyze_page("https://phish.top/start")
+
+    assert r.checked is False
+    assert r.title is None
+    assert len(checked) == 2, "цель редиректа обязана проверяться тоже"
+    assert requested == ["https://phish.top/start"], \
+        "к внутреннему адресу запроса быть не должно"

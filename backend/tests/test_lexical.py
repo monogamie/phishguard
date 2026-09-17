@@ -179,3 +179,75 @@ def test_scam_patterns_no_false_positives(url):
 ])
 def test_abused_tld_not_flagged_for_normal_zones(url):
     assert la.analyze(url).abused_tld is False
+
+
+# ── Регрессия: домены в зоне .рф считались фишингом ──────────────
+# Дефисы и цифры считались по punycode-форме, где они появляются от
+# самой кодировки: `xn--d1abbgf6aiiy.xn--p1ai` — четыре дефиса и две
+# цифры, которых в имени «президент.рф» нет. Плюс балл за сам
+# punycode, без которого национальный домен не записать. Итого ровно
+# 60 баллов и вердикт «ОПАСНО» для каждого сайта в зоне.
+
+@pytest.mark.parametrize("url,human", [
+    ("https://xn--d1abbgf6aiiy.xn--p1ai/", "президент.рф"),
+    ("https://xn--b1aew.xn--p1ai/", "мвд.рф"),
+    ("https://xn--80aesfpebagmfblc0a.xn--p1ai/", "стопкоронавирус.рф"),
+])
+def test_national_domain_is_not_suspicious(url, human):
+    f = la.analyze(url)
+    assert f.decoded_host == human
+    assert f.idn_is_native is True
+    assert f.hyphen_count == human.count("-")
+    assert f.has_digits_in_domain is False
+
+
+def test_same_domain_scores_the_same_typed_either_way():
+    """Адрес можно набрать русскими буквами или через xn-- — это один
+    и тот же сайт, и признаки обязаны выйти одинаковые. Раньше
+    «мвд.рф» получал +35 за нелатиницу, а его же punycode-запись 0."""
+    human = la.analyze("https://мвд.рф/")
+    puny = la.analyze("https://xn--b1aew.xn--p1ai/")
+    for field in ("has_non_ascii_host", "has_mixed_scripts", "idn_is_native",
+                  "hyphen_count", "has_digits_in_domain", "registered_domain"):
+        assert getattr(human, field) == getattr(puny, field), field
+    assert human.has_non_ascii_host is False
+
+
+def test_cyrillic_under_latin_tld_is_still_suspicious():
+    """Кириллица под .com прячется под латиницу — это не «родной» IDN."""
+    f = la.analyze("https://xn--80ak6aa92e.com/")
+    assert f.has_punycode is True
+    assert f.idn_is_native is False
+
+
+def test_russian_keywords_found_in_punycode_domain():
+    """В `xn--`-форме русских слов не видно, а жертва видит именно их."""
+    # голосование-конкурс.рф
+    f = la.analyze("https://xn----7sbfdmrqacwedbah8afm0b.xn--p1ai/")
+    assert "голосование" in f.trigger_keywords
+    assert f.scam_pattern == "fake_vote"
+
+
+# ── Регрессия: фишинг на чужой площадке получал «БЕЗОПАСНО» ──────
+
+def test_subdomain_of_hosting_platform_is_not_trusted():
+    """`github.io` доверенный, но заведённый за минуту поддомен на нём
+    доверенным быть не должен: иначе потолок доверия обнулял все улики
+    страницы и фишинг получал «БЕЗОПАСНО» навсегда."""
+    assert la.analyze("https://github.io/").is_trusted_domain is True
+    theirs = la.analyze("https://sber-vhod.github.io/login/")
+    assert theirs.trust_domain == "sber-vhod.github.io"
+    assert theirs.is_trusted_domain is False
+
+
+@pytest.mark.parametrize("url", [
+    "https://s3.amazonaws.com/bucket/vhod.html",
+    "https://storage.googleapis.com/bucket/sber.html",
+    "https://arendator.sharepoint.com/doc",
+])
+def test_multi_tenant_platforms_get_no_trust_ceiling(url):
+    """Файл в чужом бакете — обычный способ положить фишинг на
+    приличный домен. Имперсонацией это не считаем, но и потолка не даём."""
+    f = la.analyze(url)
+    assert f.is_trusted_domain is False
+    assert f.brand_match is None

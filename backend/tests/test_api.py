@@ -127,6 +127,45 @@ def test_rate_limit_triggers(client, monkeypatch):
     assert codes.count(200) <= 3
 
 
+def test_rate_limit_not_bypassed_by_forged_header(client, monkeypatch):
+    """
+    X-Forwarded-For прокси дописывают в КОНЕЦ, поэтому левые значения
+    подставляет сам клиент. Пока лимитер брал первое значение, лимит
+    снимался одной строкой: `curl -H "X-Forwarded-For: 1.2.3.$RANDOM"`.
+    А каждый /scan — это до семи исходящих запросов наружу.
+    """
+    from rate_limit import SlidingWindowRateLimiter
+    import rate_limit
+    monkeypatch.setattr(rate_limit, "limiter",
+                        SlidingWindowRateLimiter(limit=3, window_seconds=60))
+    # Так выглядит цепочка на Render: слева подстановка клиента,
+    # справа — настоящий адрес, дописанный прокси.
+    codes = [
+        client.post("/scan", json={"url": f"https://rlx{i}.com"},
+                    headers={"X-Forwarded-For":
+                             f"1.2.3.{i}, 198.51.100.7"}).status_code
+        for i in range(8)
+    ]
+    assert 429 in codes
+    assert codes.count(200) <= 3
+
+
+def test_client_taken_from_the_proxy_end_of_the_chain():
+    from rate_limit import client_identifier
+
+    class _Headers(dict):
+        def get(self, key, default=None):
+            return dict.get(self, key, default)
+
+    class _Request:
+        def __init__(self, xff):
+            self.headers = _Headers({"x-forwarded-for": xff})
+            self.client = type("C", (), {"host": "203.0.113.9"})()
+
+    # Слева — то, что подставил клиент, справа — то, что дописал прокси.
+    assert client_identifier(_Request("1.2.3.4, 198.51.100.7")) == "198.51.100.7"
+
+
 def test_health_not_rate_limited(client, monkeypatch):
     from rate_limit import SlidingWindowRateLimiter
     import rate_limit
