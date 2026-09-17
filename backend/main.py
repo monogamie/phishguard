@@ -181,7 +181,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 async def _skip(model_cls):
     """Заглушка для уровня, который решили не запускать."""
-    return model_cls(checked=False, error="Пропущено: доверенный домен")
+    return model_cls(checked=False, skipped=True,
+                     error="Пропущено: доверенный домен")
 
 
 async def _run_pipeline(original_url: str) -> ScanResponse:
@@ -268,7 +269,8 @@ async def _scan(url: str) -> ScanResponse:
         return result
 
     try:
-        return await _scan_cache.single_flight(url, _factory)
+        return await _scan_cache.single_flight(url, _factory,
+                                               already_missed=True)
     except asyncio.TimeoutError:
         logger.warning("Scan timed out for %s", url)
         raise HTTPException(

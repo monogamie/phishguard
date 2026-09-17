@@ -51,7 +51,7 @@ def _parse_ts(raw: Optional[str]) -> Optional[datetime]:
 async def check_ct_logs(registered_domain: str) -> CtResult:
     """Ищет самый ранний сертификат домена. Ошибки не выбрасываются."""
     if not settings.CT_ENABLED:
-        return CtResult(checked=False, error="Уровень CT выключен")
+        return CtResult(checked=False, skipped=True, error="Уровень CT выключен")
     if not registered_domain or "." not in registered_domain:
         return CtResult(checked=False, error="Не удалось выделить домен")
 

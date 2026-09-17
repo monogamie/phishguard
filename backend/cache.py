@@ -28,20 +28,23 @@ class TTLCache(Generic[T]):
         self.hits = 0
         self.misses = 0
 
-    async def get(self, key: str) -> Optional[T]:
+    async def get(self, key: str, count: bool = True) -> Optional[T]:
+        """count=False — не трогать счётчики. Нужно, когда тот же
+        ключ уже искали строкой выше: иначе один скан даёт два
+        промаха и /stats показывает вдвое худший hit_rate."""
         async with self._lock:
             entry = self._data.get(key)
             if entry is None:
-                self.misses += 1
+                self.misses += count
                 return None
             expires_at, value = entry
             if time.monotonic() > expires_at:
                 del self._data[key]
-                self.misses += 1
+                self.misses += count
                 return None
             # Обновляем позицию — это и делает кеш LRU.
             self._data.move_to_end(key)
-            self.hits += 1
+            self.hits += count
             return value
 
     async def set(self, key: str, value: T, ttl: Optional[float] = None) -> None:
@@ -56,10 +59,14 @@ class TTLCache(Generic[T]):
         key: str,
         factory: Callable[[], Awaitable[T]],
         ttl: Optional[float] = None,
+        already_missed: bool = False,
     ) -> T:
         """Кеш + дедупликация: 100 одновременных сканов одного домена
-        дают один запрос наружу, а не сто (cache stampede)."""
-        cached = await self.get(key)
+        дают один запрос наружу, а не сто (cache stampede).
+
+        already_missed — вызывающий только что сам сделал get() и
+        промахнулся; повторный промах в статистику не пишем."""
+        cached = await self.get(key, count=not already_missed)
         if cached is not None:
             return cached
 

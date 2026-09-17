@@ -22,10 +22,12 @@ from models import BrandMatch, LexicalFeatures
 from normalize import (
     canonical,
     decode_punycode,
+    to_ascii_host,
     fold_homoglyphs,
     has_non_ascii,
     levenshtein,
     mixed_scripts,
+    scripts_of,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,16 @@ logger = logging.getLogger(__name__)
 # suffix_list_urls=() — снимок PSL из пакета вместо HTTP-запроса:
 # иначе первый скан блокирует event loop сетевым вызовом.
 _extract = tldextract.TLDExtract(suffix_list_urls=(), fallback_to_snapshot=True)
+
+# Второй экстрактор с приватной частью PSL. Нужен ОТДЕЛЬНО от первого:
+# у `sber-vhod.github.io` регистрируемый домен для RDAP и журналов —
+# `github.io`, а вот доверять надо не ему, а полному имени, иначе любой
+# заведённый за минуту поддомен получает потолок доверия хозяина
+# площадки. Первый экстрактор отвечает на «что зарегистрировано»,
+# второй — на «кто за это отвечает».
+_extract_trust = tldextract.TLDExtract(suffix_list_urls=(),
+                                       fallback_to_snapshot=True,
+                                       include_psl_private_domains=True)
 
 # ── Константы ────────────────────────────────────────────────────
 
@@ -223,7 +235,11 @@ class LexicalAnalyzer:
 
         # .hostname и .port ленивы: бросают ValueError при обращении.
         try:
-            host = (parsed.hostname or "").lower()
+            # К `xn--`-форме приводим сразу: дальше всё, от выделения
+            # домена до запросов в RDAP, должно видеть один и тот же
+            # хост независимо от того, набрали адрес русскими буквами
+            # или punycode. Человеческий вид живёт в decoded_host.
+            host = to_ascii_host((parsed.hostname or "").lower())
         except ValueError:
             host = ""
         try:
@@ -246,11 +262,26 @@ class LexicalAnalyzer:
         subdomains = [s for s in ext.subdomain.lower().split(".") if s]
 
         # Хост в «человеческом» виде: то, что видит жертва в браузере.
+        # Все дальнейшие проверки идут по нему, а не по `xn--`-форме:
+        # иначе «вход-сбербанк.рф» выглядит как xn----8sbcacmj6b0ad0aj2c
+        # — без ключевых слов, зато с четырьмя дефисами и цифрами,
+        # которых в имени нет. Из-за этого любой домен .рф получал 60
+        # баллов и вердикт «ОПАСНО».
         decoded_host = decode_punycode(host) if "xn--" in host else host
+        idn_native = self._idn_is_native(decoded_host)
+        ext_human = _extract(decoded_host) if decoded_host != host else ext
+        sld_human = ext_human.domain.lower() or sld
 
-        is_trusted = registered_domain in TRUSTED_DOMAINS
+        # Доверие — по приватному PSL: см. комментарий к _extract_trust.
+        trust_ext = _extract_trust(host)
+        # domain пуст, когда хост И ЕСТЬ приватный суффикс (сам
+        # `github.io`): тогда единица доверия — обычный eTLD+1.
+        trust_domain = (f"{trust_ext.domain}.{trust_ext.suffix}".lower()
+                        if trust_ext.suffix and trust_ext.domain
+                        else registered_domain)
+        is_trusted = trust_domain in TRUSTED_DOMAINS
 
-        keywords = self._find_keywords(path_and_query, host, is_trusted)
+        keywords = self._find_keywords(path_and_query, decoded_host, is_trusted)
 
         features = LexicalFeatures(
             scheme                = scheme,
@@ -261,24 +292,27 @@ class LexicalAnalyzer:
             has_ip_address        = self._is_ip_host(host),
             has_at_symbol         = "@" in netloc,
             has_punycode          = any(l.startswith("xn--") for l in host.split(".")),
-            has_non_ascii_host    = has_non_ascii(host),
+            idn_is_native         = idn_native,
+            has_non_ascii_host    = has_non_ascii(decoded_host) and not idn_native,
             has_mixed_scripts     = self._has_mixed_scripts(decoded_host),
             has_non_standard_port = self._is_non_standard_port(port, scheme, port_malformed),
             has_encoded_host      = has_encoded_host,
             has_redirect_params   = bool(_REDIRECT_PARAMS_RE.search(raw)),
-            has_digits_in_domain  = bool(re.search(r"\d", sld)) and not is_trusted,
+            has_digits_in_domain  = bool(re.search(r"\d", sld_human)) and not is_trusted,
             is_insecure_scheme    = scheme == "http",
             is_shortener          = registered_domain in _SHORTENER_DOMAINS,
             subdomain_count       = len([s for s in subdomains if s != "www"]),
             url_length            = len(raw),
-            domain_length         = len(sld),
-            hyphen_count          = host.count("-"),
+            domain_length         = len(sld_human),
+            hyphen_count          = decoded_host.count("-"),
             trigger_keywords      = keywords,
             scam_pattern          = (None if is_trusted else
-                                     _match_scam_pattern(f"{path_and_query} {host}")),
+                                     _match_scam_pattern(
+                                         f"{path_and_query} {decoded_host}")),
             suspicious_tld        = self._is_suspicious_tld(suffix),
             abused_tld            = self._is_abused_tld(suffix),
             is_trusted_domain     = is_trusted,
+            trust_domain          = trust_domain,
             brand_match           = self._match_brand(
                                         host, decoded_host, sld,
                                         registered_domain, subdomains),
@@ -288,6 +322,30 @@ class LexicalAnalyzer:
         return features
 
     # ── Отдельные извлекатели признаков ──────────────────────────
+
+    @staticmethod
+    def _idn_is_native(human_host: str) -> bool:
+        """
+        True, если нелатинское имя для этой зоны нормально.
+
+        `мвд.рф` иначе и не записать. А вот кириллица под `.com` —
+        попытка выдать себя за латиницу, и её мы по-прежнему считаем
+        признаком риска. Признак «родного» IDN: и имя, и зона — одна
+        и та же нелатинская письменность.
+
+        Смотрит только на человеческий вид: адрес могли набрать и
+        русскими буквами, и через xn--, а признак обязан выйти один
+        и тот же, иначе один сайт получает два разных вердикта.
+        """
+        labels = [l for l in human_host.split(".") if l]
+        if len(labels) < 2:
+            return False
+        tld_scripts = scripts_of(labels[-1])
+        name_scripts = scripts_of("".join(labels[:-1]))
+        # Зона должна быть нелатинской: .рф, .бел, .укр, .москва.
+        if not tld_scripts or tld_scripts == {"LATIN"}:
+            return False
+        return name_scripts and name_scripts == tld_scripts
 
     @staticmethod
     def _safe_netloc(raw: str) -> str:

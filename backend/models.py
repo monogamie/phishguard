@@ -118,6 +118,7 @@ class AiVerdictResult(BaseModel):
     регулярно упирается в границы, это либо плохие границы, либо
     попытки инъекции через URL."""
     checked: bool = False
+    skipped: bool = False   # не запускали нарочно, а не сбой
     delta: int = 0
     raw_delta: int = 0
     confidence: Optional[str] = None       # low | medium | high
@@ -151,6 +152,7 @@ class DomainAgeResult(BaseModel):
 class TlsResult(BaseModel):
     """Данные сертификата. Мы его ИНСПЕКТИРУЕМ, а не доверяем ему."""
     checked: bool = False
+    skipped: bool = False   # не запускали нарочно, а не сбой
     age_days: Optional[int] = None          # сколько дней назад выпущен
     issued_at: Optional[str] = None
     expires_at: Optional[str] = None
@@ -171,9 +173,13 @@ class CtResult(BaseModel):
     когда RDAP и WHOIS молчат, что для части ccTLD обычное дело.
     """
     checked: bool = False
+    skipped: bool = False   # не запускали нарочно, а не сбой
     first_seen_days: Optional[int] = None
     first_seen_at: Optional[str] = None
-    total_certs: int = 0
+    # None — «мы не дочитали ответ», 0 — «журналы ответили: записей нет».
+    # Разница важна: без неё домен с десятками тысяч сертификатов
+    # получал признак «сертификат не выпускали ни разу».
+    total_certs: Optional[int] = None
     issuers: list[str] = Field(default_factory=list)
     error: Optional[str] = None
 
@@ -186,7 +192,9 @@ class PageResult(BaseModel):
     адрес, а половина улик мошеннической страницы — в её содержимом.
     """
     checked: bool = False
+    skipped: bool = False   # не запускали нарочно, а не сбой
     status_code: Optional[int] = None
+    final_url: Optional[str] = None            # если был редирект
     title: Optional[str] = None
     has_password_field: bool = False
     messenger_login: list[str] = Field(default_factory=list)   # telegram, vk, …
@@ -210,10 +218,12 @@ class LexicalFeatures(BaseModel):
     scheme:                str = "https"
     host:                  str = ""
     registered_domain:     str = ""
+    trust_domain:          str = ""    # единица доверия (приватный PSL)
     tld:                   str = ""
     has_ip_address:        bool = False
     has_at_symbol:         bool = False
     has_punycode:          bool = False
+    idn_is_native:         bool = False    # .рф и подобные: нелатиница тут норма
     has_non_ascii_host:    bool = False
     has_mixed_scripts:     bool = False
     has_non_standard_port: bool = False

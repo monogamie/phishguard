@@ -62,6 +62,34 @@ def decode_punycode(host: str) -> str:
     return ".".join(out)
 
 
+def to_ascii_host(host: str) -> str:
+    """
+    Приводит хост к `xn--`-форме: `мвд.рф` → `xn--b1aew.xn--p1ai`.
+
+    Адрес можно набрать и русскими буквами, и через punycode — это
+    один и тот же сайт, и признаки должны выйти одинаковые. Плюс
+    RDAP и журналы сертификатов принимают только ASCII-форму.
+
+    Кодируем только нелатинские метки: ASCII-метку трогать нельзя,
+    кодек idna строже DNS и отбивает, например, подчёркивания.
+    Битая метка остаётся как есть — лучше разобрать сырую строку,
+    чем упасть.
+    """
+    if not has_non_ascii(host):
+        return host
+
+    out: list[str] = []
+    for label in host.split("."):
+        if any(ord(ch) > 127 for ch in label):
+            try:
+                out.append(idna.encode(label, uts46=True).decode("ascii"))
+            except (idna.IDNAError, UnicodeError, ValueError):
+                out.append(label)
+        else:
+            out.append(label)
+    return ".".join(out)
+
+
 def fold_homoglyphs(text: str) -> str:
     """
     Складывает визуально похожие символы к латинице.
@@ -161,6 +189,21 @@ def has_non_ascii(text: str) -> bool:
     return any(ord(ch) > 127 for ch in text)
 
 
+def scripts_of(text: str) -> set[str]:
+    """Набор письменностей, встречающихся в строке ("CYRILLIC", "LATIN")."""
+    scripts: set[str] = set()
+    for ch in text:
+        if not ch.isalpha():
+            continue
+        try:
+            # Первое слово в имени символа Unicode — его письменность:
+            # "CYRILLIC SMALL LETTER A", "LATIN SMALL LETTER A".
+            scripts.add(unicodedata.name(ch).split()[0])
+        except ValueError:
+            continue
+    return scripts
+
+
 def mixed_scripts(text: str) -> bool:
     """
     True, если в одной метке смешаны разные письменности
@@ -188,6 +231,7 @@ def mixed_scripts(text: str) -> bool:
 
 __all__ = [
     "decode_punycode",
+    "to_ascii_host",
     "fold_homoglyphs",
     "fold_leet",
     "fold_sequences",
@@ -195,4 +239,5 @@ __all__ = [
     "levenshtein",
     "has_non_ascii",
     "mixed_scripts",
+    "scripts_of",
 ]
