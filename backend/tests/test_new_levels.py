@@ -152,9 +152,27 @@ def test_cert_mismatch_raises_score():
     assert any(s.code == "CERT_MISMATCH" for s in with_bad.signals)
 
 
-def test_fresh_cert_flagged():
-    r = _score(tls=TlsResult(checked=True, age_days=1, covers_domain=True))
-    assert any(s.code == "CERT_VERY_NEW" for s in r.signals)
+def test_fresh_cert_counts_only_when_registry_is_silent():
+    """Сертификат получают вместе с доменом — это один факт, не два.
+    Пока обе ветки считались, свежий домен набирал 50 за домен плюс 30
+    за сертификат: 80 из 60 нужных для «ОПАСНО» без единой улики."""
+    fresh = TlsResult(checked=True, age_days=1, covers_domain=True)
+
+    age_known = _score(age=DomainAgeResult(checked=True, age_days=2), tls=fresh)
+    assert not any(s.code == "CERT_VERY_NEW" for s in age_known.signals)
+
+    age_unknown = _score(age=DomainAgeResult(checked=False), tls=fresh)
+    assert any(s.code == "CERT_VERY_NEW" for s in age_unknown.signals)
+
+
+def test_renewed_cert_on_an_old_site_is_not_suspicious():
+    """Let's Encrypt перевыпускает каждые 60–90 дней. Сайт с историей
+    получал «ПОДОЗРИТЕЛЬНО» за вчерашнее продление сертификата."""
+    r = _score(age=DomainAgeResult(checked=True, age_days=5000),
+               tls=TlsResult(checked=True, age_days=4, covers_domain=True,
+                             issuer="Let's Encrypt"))
+    assert r.risk_score == 0
+    assert r.verdict == Verdict.SAFE
 
 
 def test_old_cert_is_an_ok_signal():

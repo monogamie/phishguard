@@ -215,6 +215,11 @@ def calculate_risk_score(
               "Дату регистрации получить не удалось",
               weight_key="domain_age_unknown")
 
+    # Знаем ли мы возраст домена из реестра. Ниже это решает, считать
+    # ли возраст сертификата уликой: сертификат получают вместе с
+    # доменом, так что это один и тот же факт, а не два.
+    age_known = domain_age.checked and domain_age.age_days is not None
+
     # ── Уровень 2b: сертификат ───────────────────────────────────
     if tls is not None and tls.checked:
         if tls.covers_domain is False:
@@ -233,13 +238,26 @@ def calculate_risk_score(
                   "на скорую руку",
                   weight_key="cert_expired")
         if tls.age_days is not None:
-            if tls.age_days < settings.CERT_VERY_NEW_DAYS:
+            # Возраст сертификата — это косвенная оценка возраста сайта,
+            # и вес ей даём ТОЛЬКО когда реестр молчит. Иначе один факт
+            # «домен свежий» засчитывается дважды: 50 за домен плюс 30
+            # за сертификат — 80 баллов из 60 нужных для «ОПАСНО», ещё
+            # до единой настоящей улики.
+            #
+            # Хуже того, на зрелом домене свежий сертификат — это
+            # обычное продление: Let's Encrypt перевыпускает каждые
+            # 60–90 дней. Тринадцатилетний сайт получал «ПОДОЗРИТЕЛЬНО»
+            # просто за то, что вчера продлил сертификат.
+            #
+            # Для журналов CT такая же развилка уже стояла ниже, а для
+            # сертификата её забыли — асимметрия была случайной.
+            if tls.age_days < settings.CERT_VERY_NEW_DAYS and not age_known:
                 c.add("CERT_VERY_NEW", Severity.WARN, "Свежий сертификат",
                       f"Сертификат выпущен {tls.age_days} дн. назад. "
                       f"Сертификат получают вместе с доменом, значит и сайт "
                       f"появился только что",
                       weight_key="cert_very_new")
-            elif tls.age_days < settings.CERT_NEW_DAYS:
+            elif tls.age_days < settings.CERT_NEW_DAYS and not age_known:
                 c.add("CERT_NEW", Severity.INFO, "Сертификат новый",
                       f"Сертификату {tls.age_days} дн.",
                       weight_key="cert_new")
@@ -259,7 +277,6 @@ def calculate_risk_score(
     # Независимая оценка возраста домена. Даём её вес ТОЛЬКО когда
     # RDAP и WHOIS молчат: иначе один и тот же факт «домен свежий»
     # засчитывается дважды.
-    age_known = domain_age.checked and domain_age.age_days is not None
     if ct is not None and ct.checked:
         if ct.first_seen_days is not None and not age_known:
             if ct.first_seen_days < settings.DOMAIN_AGE_VERY_NEW:
