@@ -409,6 +409,24 @@ const SIG = {
         AI_CLEAN:{t:'Анализ модели', d:'Модель не нашла признаков мошенничества.'},
         SCAM_PATTERN:{t:'Узнаваемая схема обмана', d:'Связка слов в адресе повторяет известную мошенническую схему.'},
         ABUSED_TLD:{t:'Дешёвая доменная зона', d:'Зона стоит копейки, поэтому в ней много одноразовых сайтов.'},
+        CERT_MISMATCH:{t:'Сертификат не тот', d:'Сертификат выдан на другое имя — браузер на такой странице предупреждает.'},
+        CERT_SELF_SIGNED:{t:'Самоподписанный сертификат', d:'Сертификат выписан сам себе, а не удостоверяющим центром.'},
+        CERT_EXPIRED:{t:'Сертификат просрочен', d:'Срок действия сертификата истёк.'},
+        CERT_VERY_NEW:{t:'Свежий сертификат', d:'Сертификат получают вместе с доменом — значит, сайт появился только что.'},
+        CERT_NEW:{t:'Сертификат новый', d:'Сертификату меньше месяца.'},
+        CERT_OK:{t:'Сертификат', d:'Действующий сертификат с историей.'},
+        TLS_BROKEN:{t:'Защита не работает', d:'Адрес заявлен как https, но защищённое соединение не устанавливается.'},
+        CT_FIRST_SEEN_VERY_NEW:{t:'Домен только появился', d:'Первый сертификат на домен выпущен считанные дни назад.'},
+        CT_FIRST_SEEN_NEW:{t:'Домен недавний', d:'Первый сертификат выпущен меньше месяца назад.'},
+        CT_MATURE:{t:'История домена', d:'Домен давно известен в журналах сертификатов.'},
+        CT_CONFIRMS:{t:'История домена', d:'Журналы сертификатов подтверждают возраст домена.'},
+        CT_NO_RECORDS:{t:'Нет в журналах', d:'На домен никогда не выпускали сертификат.'},
+        PAGE_MESSENGER_LOGIN:{t:'Вход через мессенджер', d:'Страница предлагает войти через мессенджер — так угоняют аккаунты.'},
+        PAGE_CROSS_DOMAIN_FORM:{t:'Данные уходят на другой сайт', d:'Форма отправляет введённое на посторонний адрес.'},
+        PAGE_BRAND_MISMATCH:{t:'Чужой бренд на странице', d:'Страница выдаёт себя за компанию, которой домен не принадлежит.'},
+        PAGE_PASSWORD_FORM:{t:'Просит пароль', d:'На странице есть поле для пароля.'},
+        PAGE_HIDDEN_INPUTS:{t:'Скрытые поля в форме', d:'Так передают метки кампании в массовых рассылках.'},
+        PAGE_CLEAN:{t:'Содержимое страницы', d:'Форм для пароля и подозрительных кнопок входа нет.'},
         HTTPS_OK:{t:'Протокол', d:'Соединение шифруется (HTTPS).'},
         ASCII_OK:{t:'Символы', d:'Только стандартные латинские символы.'},
         TLD_OK:{t:'Зона', d:'Обычная доменная зона.'},
@@ -455,6 +473,24 @@ const SIG = {
         AI_CLEAN:{t:'Model analysis', d:'The model found no signs of fraud.'},
         SCAM_PATTERN:{t:'Known scam pattern', d:'The word combination in the address matches a known fraud scheme.'},
         ABUSED_TLD:{t:'Cheap domain zone', d:'This zone costs pennies, so it is full of throwaway sites.'},
+        CERT_MISMATCH:{t:'Wrong certificate', d:'The certificate was issued for a different name.'},
+        CERT_SELF_SIGNED:{t:'Self-signed certificate', d:'Signed by itself rather than a certificate authority.'},
+        CERT_EXPIRED:{t:'Certificate expired', d:'The certificate is past its validity period.'},
+        CERT_VERY_NEW:{t:'Fresh certificate', d:'Certificates come with the domain — so the site is brand new.'},
+        CERT_NEW:{t:'New certificate', d:'The certificate is less than a month old.'},
+        CERT_OK:{t:'Certificate', d:'Valid certificate with history.'},
+        TLS_BROKEN:{t:'Encryption broken', d:'Claims https but no secure connection can be established.'},
+        CT_FIRST_SEEN_VERY_NEW:{t:'Domain just appeared', d:'Its first certificate was issued only days ago.'},
+        CT_FIRST_SEEN_NEW:{t:'Recent domain', d:'Its first certificate is less than a month old.'},
+        CT_MATURE:{t:'Domain history', d:'Long known in certificate transparency logs.'},
+        CT_CONFIRMS:{t:'Domain history', d:'Certificate logs confirm the domain age.'},
+        CT_NO_RECORDS:{t:'Not in logs', d:'No certificate was ever issued for this domain.'},
+        PAGE_MESSENGER_LOGIN:{t:'Messenger login', d:'The page offers messenger login — that is how accounts get stolen.'},
+        PAGE_CROSS_DOMAIN_FORM:{t:'Data goes elsewhere', d:'The form submits what you type to a third-party address.'},
+        PAGE_BRAND_MISMATCH:{t:'Foreign brand on page', d:'The page poses as a company that does not own this domain.'},
+        PAGE_PASSWORD_FORM:{t:'Asks for a password', d:'The page contains a password field.'},
+        PAGE_HIDDEN_INPUTS:{t:'Hidden form fields', d:'Used to carry campaign tags in mass mailings.'},
+        PAGE_CLEAN:{t:'Page contents', d:'No password forms or suspicious login buttons.'},
         HTTPS_OK:{t:'Protocol', d:'Connection is encrypted (HTTPS).'},
         ASCII_OK:{t:'Characters', d:'Standard Latin characters only.'},
         TLD_OK:{t:'Zone', d:'Ordinary domain zone.'},
@@ -1311,6 +1347,12 @@ function renderEngineTags(result) {
         }
         if (d && d.domain_age && d.domain_age.age_days != null) {
             tags.push('RDAP: ' + d.domain_age.age_days + ' d');
+        }
+        if (d && d.tls && d.tls.checked && d.tls.age_days != null) {
+            tags.push('Сертификат: ' + d.tls.age_days + ' d');
+        }
+        if (d && d.page && d.page.checked) {
+            tags.push('Страница: прочитана');
         }
         if (d && d.ai && d.ai.checked) {
             const sign = d.ai.delta > 0 ? '+' : '';

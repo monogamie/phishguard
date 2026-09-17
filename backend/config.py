@@ -42,6 +42,26 @@ DEFAULT_WEIGHTS: dict[str, int] = {
     "long_redirect_chain":   15,   # цепочка редиректов > 2 хопов
     "cross_domain_redirect": 20,   # редирект уводит на другой домен
 
+    # ── TLS-сертификат (уровень 2b) ─────────────────────────────
+    "cert_very_new":         30,   # выпущен менее 7 дней назад
+    "cert_new":              15,   # менее 30 дней
+    "cert_mismatch":         40,   # не покрывает проверяемый домен
+    "cert_self_signed":      35,   # самоподписанный
+    "cert_expired":          25,   # просрочен
+    "tls_broken":            20,   # заявлен https, но рукопожатие не вышло
+
+    # ── Журналы Certificate Transparency (уровень 2c) ───────────
+    "ct_first_seen_very_new": 35,  # первый сертификат моложе 7 дней
+    "ct_first_seen_new":      20,  # моложе 30 дней
+    "ct_no_records":          10,  # домена нет в журналах вообще
+
+    # ── Содержимое страницы (уровень 5) ─────────────────────────
+    "page_password_form":    20,   # поле ввода пароля
+    "page_messenger_login":  25,   # «войти через Telegram/VK» на чужом сайте
+    "page_cross_domain_form": 30,  # форма отправляет данные на другой домен
+    "page_brand_mismatch":   35,   # бренд в тексте страницы, но не в домене
+    "page_hidden_inputs":    10,   # много скрытых полей в форме
+
     # ── Лексика и имперсонация ──────────────────────────────────
     "trigger_keywords":      12,   # базовый вес за первое слово
     "trigger_keywords_many": 22,   # два и более слов — сильнее
@@ -117,7 +137,7 @@ class Settings(BaseSettings):
     DNS_TIMEOUT: float = 3.0
     RESOLVE_HOP_TIMEOUT: float = 4.0       # таймаут одного хопа редиректа
     RESOLVE_TOTAL_TIMEOUT: float = 10.0    # общий дедлайн разворачивания
-    SCAN_TOTAL_TIMEOUT: float = 25.0       # дедлайн всего /scan
+    SCAN_TOTAL_TIMEOUT: float = 30.0       # дедлайн всего /scan
 
     # ── Разворачивание редиректов ───────────────────────────────
     ENABLE_URL_RESOLUTION: bool = True
@@ -142,11 +162,33 @@ class Settings(BaseSettings):
     AI_MAX_DELTA: int = 35
     AI_MIN_DELTA: int = -15
 
+    # ── Уровень 2b: TLS-сертификат ──────────────────────────────
+    TLS_ENABLED: bool = True
+    TLS_TIMEOUT: float = 6.0
+    CERT_VERY_NEW_DAYS: int = 7
+    CERT_NEW_DAYS: int = 30
+
+    # ── Уровень 2c: журналы Certificate Transparency ────────────
+    CT_ENABLED: bool = True
+    CT_TIMEOUT: float = 8.0
+    CT_ENDPOINT: str = "https://crt.sh/"
+
+    # ── Уровень 5: содержимое страницы ──────────────────────────
+    PAGE_ENABLED: bool = True
+    PAGE_TIMEOUT: float = 8.0
+    # Читаем только начало страницы: формы и метатеги всегда в первых
+    # килобайтах, а полная загрузка — это подарок тому, кто подсунет
+    # ссылку на многогигабайтный файл.
+    PAGE_MAX_BYTES: int = 262144
+
     # ── Кеширование ─────────────────────────────────────────────
     CACHE_TTL_SCAN: int = 900              # 15 мин на итоговый вердикт
     CACHE_TTL_DOMAIN_AGE: int = 86400      # сутки — дата регистрации не меняется
     CACHE_TTL_THREAT: int = 300            # 5 мин — угрозы меняются быстро
     CACHE_TTL_AI: int = 3600               # час: ответ модели платный
+    CACHE_TTL_TLS: int = 3600              # сертификаты меняются редко
+    CACHE_TTL_CT: int = 21600              # 6 ч: журналы пополняются медленно
+    CACHE_TTL_PAGE: int = 900               # страница может измениться
     CACHE_MAX_SIZE: int = 4096
 
     # ── Rate limiting ───────────────────────────────────────────
