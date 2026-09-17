@@ -22,8 +22,9 @@ def _offline(monkeypatch):
     import pipeline.reputation as rep
     import pipeline.domain_age as da
     import url_resolver as ur
-    from models import (AiVerdictResult, DomainAgeResult, RedirectInfo,
-                        ReputationResult, ThreatIntelResult)
+    from models import (AiVerdictResult, CtResult, DomainAgeResult, PageResult,
+                        RedirectInfo, ReputationResult, ThreatIntelResult,
+                        TlsResult)
 
     async def no_gsb(url):
         return ThreatIntelResult(checked=False, error="offline")
@@ -40,6 +41,15 @@ def _offline(monkeypatch):
     async def no_ai(url, lexical):
         return AiVerdictResult(checked=False, error="offline")
 
+    async def no_tls(url):
+        return TlsResult(checked=False, error="offline")
+
+    async def no_ct(domain):
+        return CtResult(checked=False, error="offline")
+
+    async def no_page(url):
+        return PageResult(checked=False, error="offline")
+
     monkeypatch.setattr(ti, "check_google_safe_browsing", no_gsb)
     monkeypatch.setattr(rep, "check_urlhaus", no_urlhaus)
     monkeypatch.setattr(da, "check_domain_age", no_age)
@@ -51,3 +61,6 @@ def _offline(monkeypatch):
     monkeypatch.setattr(main, "check_domain_age", no_age)
     monkeypatch.setattr(main, "resolve_final_url", no_resolve)
     monkeypatch.setattr(main, "analyze_with_ai", no_ai)
+    monkeypatch.setattr(main, "check_tls", no_tls)
+    monkeypatch.setattr(main, "check_ct_logs", no_ct)
+    monkeypatch.setattr(main, "analyze_page", no_page)

@@ -12,7 +12,9 @@ from typing import Optional
 from config import settings
 from models import (
     AiVerdictResult,
+    CtResult,
     DomainAgeResult,
+    PageResult,
     LexicalFeatures,
     RedirectInfo,
     ReputationResult,
@@ -20,6 +22,7 @@ from models import (
     Severity,
     Signal,
     ThreatIntelResult,
+    TlsResult,
     Verdict,
 )
 from pipeline.threat_intel import THREAT_TYPE_LABELS
@@ -69,7 +72,10 @@ def _verdict(score: int) -> Verdict:
 
 def _confidence(gsb: ThreatIntelResult, reputation: ReputationResult,
                 age: DomainAgeResult, redirects: Optional[RedirectInfo],
-                ai: Optional[AiVerdictResult] = None) -> float:
+                ai: Optional[AiVerdictResult] = None,
+                tls: Optional[TlsResult] = None,
+                ct: Optional[CtResult] = None,
+                page: Optional[PageResult] = None) -> float:
     """Доля ответивших источников: пользователь должен отличать
     «проверено всеми, чисто» от «почти все недоступны»."""
     available = 1.0                       # лексика работает всегда
@@ -78,6 +84,11 @@ def _confidence(gsb: ThreatIntelResult, reputation: ReputationResult,
         total += 1
         if ai.checked:
             available += 1
+    for extra in (tls, ct, page):
+        if extra is not None:
+            total += 1
+            if extra.checked:
+                available += 1
     if gsb.checked:
         available += 1
     if reputation.checked:
@@ -99,6 +110,9 @@ def calculate_risk_score(
     lexical: LexicalFeatures,
     redirects: Optional[RedirectInfo] = None,
     ai: Optional[AiVerdictResult] = None,
+    tls: Optional[TlsResult] = None,
+    ct: Optional[CtResult] = None,
+    page: Optional[PageResult] = None,
 ) -> ScanResponse:
     """
     Собирает улики всех уровней в итоговый ScanResponse.
@@ -112,6 +126,9 @@ def calculate_risk_score(
         lexical:      структурные признаки (уровень 3)
         redirects:    цепочка редиректов (уровень 0)
         ai:           мнение языковой модели (уровень 1c)
+        tls:          сертификат (уровень 2b)
+        ct:           журналы Certificate Transparency (уровень 2c)
+        page:         содержимое страницы (уровень 5)
     """
     c = _SignalCollector()
     external_hit = False
@@ -195,6 +212,125 @@ def calculate_risk_score(
         c.add("DOMAIN_AGE_UNKNOWN", Severity.INFO, "Возраст домена",
               "Дату регистрации получить не удалось",
               weight_key="domain_age_unknown")
+
+    # ── Уровень 2b: сертификат ───────────────────────────────────
+    if tls is not None and tls.checked:
+        if tls.covers_domain is False:
+            c.add("CERT_MISMATCH", Severity.DANGER, "Сертификат не тот",
+                  "Сертификат выдан на другое имя. Браузер на такой странице "
+                  "показывает предупреждение, которое легко проскочить",
+                  weight_key="cert_mismatch")
+        if tls.self_signed:
+            c.add("CERT_SELF_SIGNED", Severity.DANGER, "Самоподписанный сертификат",
+                  "Сертификат выписан сам себе, а не удостоверяющим центром. "
+                  "Настоящие сервисы так не делают",
+                  weight_key="cert_self_signed")
+        if tls.expired:
+            c.add("CERT_EXPIRED", Severity.WARN, "Сертификат просрочен",
+                  "Срок действия сертификата истёк — сайт заброшен или сделан "
+                  "на скорую руку",
+                  weight_key="cert_expired")
+        if tls.age_days is not None:
+            if tls.age_days < settings.CERT_VERY_NEW_DAYS:
+                c.add("CERT_VERY_NEW", Severity.WARN, "Свежий сертификат",
+                      f"Сертификат выпущен {tls.age_days} дн. назад. "
+                      f"Сертификат получают вместе с доменом, значит и сайт "
+                      f"появился только что",
+                      weight_key="cert_very_new")
+            elif tls.age_days < settings.CERT_NEW_DAYS:
+                c.add("CERT_NEW", Severity.INFO, "Сертификат новый",
+                      f"Сертификату {tls.age_days} дн.",
+                      weight_key="cert_new")
+            else:
+                c.ok("CERT_OK", "Сертификат",
+                     f"Действующий сертификат, выпущен {tls.age_days} дн. назад"
+                     + (f", издатель: {tls.issuer}" if tls.issuer else ""))
+    elif tls is not None and tls.handshake_failed and lexical.scheme == "https":
+        c.add("TLS_BROKEN", Severity.WARN, "Защищённое соединение не работает",
+              "Адрес заявлен как https, но установить защищённое соединение "
+              "не удалось",
+              weight_key="tls_broken")
+
+    # ── Уровень 2c: журналы сертификатов ─────────────────────────
+    # Независимая оценка возраста домена. Даём её вес ТОЛЬКО когда
+    # RDAP и WHOIS молчат: иначе один и тот же факт «домен свежий»
+    # засчитывается дважды.
+    age_known = domain_age.checked and domain_age.age_days is not None
+    if ct is not None and ct.checked:
+        if ct.first_seen_days is not None and not age_known:
+            if ct.first_seen_days < settings.DOMAIN_AGE_VERY_NEW:
+                c.add("CT_FIRST_SEEN_VERY_NEW", Severity.DANGER,
+                      "Домен только появился",
+                      f"Первый сертификат на этот домен выпущен "
+                      f"{ct.first_seen_days} дн. назад. Дату регистрации "
+                      f"узнать не удалось, но журналы сертификатов её выдают",
+                      weight_key="ct_first_seen_very_new")
+            elif ct.first_seen_days < settings.DOMAIN_AGE_NEW:
+                c.add("CT_FIRST_SEEN_NEW", Severity.WARN, "Домен недавний",
+                      f"Первый сертификат выпущен {ct.first_seen_days} дн. назад",
+                      weight_key="ct_first_seen_new")
+            else:
+                c.ok("CT_MATURE", "История домена",
+                     f"В журналах сертификатов домен известен "
+                     f"{ct.first_seen_days} дн.")
+        elif ct.total_certs == 0 and lexical.scheme == "https":
+            c.add("CT_NO_RECORDS", Severity.INFO, "Нет в журналах сертификатов",
+                  "На домен никогда не выпускали сертификат, хотя адрес "
+                  "заявлен как https",
+                  weight_key="ct_no_records")
+        elif ct.first_seen_days is not None:
+            c.ok("CT_CONFIRMS", "История домена",
+                 f"Журналы сертификатов подтверждают: домен известен "
+                 f"{ct.first_seen_days} дн.")
+
+    # ── Уровень 5: содержимое страницы ───────────────────────────
+    if page is not None and page.checked:
+        if page.messenger_login:
+            names = ", ".join(page.messenger_login)
+            c.add("PAGE_MESSENGER_LOGIN", Severity.DANGER,
+                  "Вход через мессенджер",
+                  f"Страница предлагает войти через {names}. Именно так "
+                  f"угоняют аккаунты: вы подтверждаете вход, который "
+                  f"запустил не вы",
+                  weight_key="page_messenger_login")
+
+        if page.cross_domain_form:
+            c.add("PAGE_CROSS_DOMAIN_FORM", Severity.DANGER,
+                  "Данные уходят на другой сайт",
+                  f"Форма отправляет введённое на посторонний адрес: "
+                  f"{page.cross_domain_form}",
+                  weight_key="page_cross_domain_form")
+
+        # Бренд заявлен в тексте, но домен ему не принадлежит.
+        if page.brands_in_text and not lexical.is_trusted_domain:
+            from data.brands import BRAND_DOMAINS
+            foreign = [b for b in page.brands_in_text
+                       if lexical.registered_domain not in BRAND_DOMAINS.get(b, ())]
+            if foreign:
+                c.add("PAGE_BRAND_MISMATCH", Severity.DANGER,
+                      "Чужой бренд на странице",
+                      f"Страница выдаёт себя за «{', '.join(foreign)}», "
+                      f"но домен {lexical.registered_domain} этой компании "
+                      f"не принадлежит",
+                      weight_key="page_brand_mismatch")
+
+        if page.has_password_field and not lexical.is_trusted_domain:
+            c.add("PAGE_PASSWORD_FORM", Severity.WARN, "Просит пароль",
+                  "На странице есть поле для пароля. Само по себе это "
+                  "нормально, но в сочетании с остальными признаками — "
+                  "повод не вводить ничего",
+                  weight_key="page_password_form")
+
+        if page.hidden_input_count >= 3:
+            c.add("PAGE_HIDDEN_INPUTS", Severity.INFO, "Скрытые поля в форме",
+                  f"В форме {page.hidden_input_count} скрытых полей — так "
+                  f"передают метки кампании в массовых рассылках",
+                  weight_key="page_hidden_inputs")
+
+        if not any([page.messenger_login, page.cross_domain_form,
+                    page.has_password_field]):
+            c.ok("PAGE_CLEAN", "Содержимое страницы",
+                 "Форм для ввода паролей и подозрительных кнопок входа нет")
 
     # ── Уровень 3: структура и лексика ───────────────────────────
     if lexical.has_ip_address:
@@ -378,7 +514,7 @@ def calculate_risk_score(
 
     logger.info("Score for %s: %d (%s), signals=%d, confidence=%.2f",
                 url, score, verdict.value, len(c.signals),
-                _confidence(gsb, reputation, domain_age, redirects, ai))
+                _confidence(gsb, reputation, domain_age, redirects, ai, tls, ct, page))
 
     details = {
         "threat_intel": gsb.model_dump(),
@@ -388,6 +524,12 @@ def calculate_risk_score(
     }
     if ai is not None:
         details["ai"] = ai.model_dump()
+    if tls is not None:
+        details["tls"] = tls.model_dump()
+    if ct is not None:
+        details["ct"] = ct.model_dump()
+    if page is not None:
+        details["page"] = page.model_dump()
 
     return ScanResponse(
         url=original_url,
@@ -395,7 +537,7 @@ def calculate_risk_score(
         is_phishing=score >= settings.PHISHING_THRESHOLD,
         risk_score=score,
         verdict=verdict,
-        confidence=_confidence(gsb, reputation, domain_age, redirects, ai),
+        confidence=_confidence(gsb, reputation, domain_age, redirects, ai, tls, ct, page),
         signals=c.signals,
         # reasons сохранён для обратной совместимости со старым фронтендом.
         reasons=[f"{s.title}: {s.detail}" for s in c.signals

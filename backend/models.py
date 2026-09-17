@@ -148,6 +148,56 @@ class DomainAgeResult(BaseModel):
     error: Optional[str] = None
 
 
+class TlsResult(BaseModel):
+    """Данные сертификата. Мы его ИНСПЕКТИРУЕМ, а не доверяем ему."""
+    checked: bool = False
+    age_days: Optional[int] = None          # сколько дней назад выпущен
+    issued_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    issuer: Optional[str] = None
+    covers_domain: Optional[bool] = None    # домен есть в SAN сертификата
+    self_signed: bool = False
+    expired: bool = False
+    handshake_failed: bool = False
+    error: Optional[str] = None
+
+
+class CtResult(BaseModel):
+    """
+    Журналы Certificate Transparency.
+
+    `first_seen_days` — сколько дней назад на домен впервые выпустили
+    сертификат. Это независимая оценка возраста домена: работает даже
+    когда RDAP и WHOIS молчат, что для части ccTLD обычное дело.
+    """
+    checked: bool = False
+    first_seen_days: Optional[int] = None
+    first_seen_at: Optional[str] = None
+    total_certs: int = 0
+    issuers: list[str] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+class PageResult(BaseModel):
+    """
+    Признаки, найденные в HTML страницы.
+
+    Закрывает главный пробел остальных уровней: они смотрят только на
+    адрес, а половина улик мошеннической страницы — в её содержимом.
+    """
+    checked: bool = False
+    status_code: Optional[int] = None
+    title: Optional[str] = None
+    has_password_field: bool = False
+    messenger_login: list[str] = Field(default_factory=list)   # telegram, vk, …
+    cross_domain_form: Optional[str] = None    # куда уходит форма
+    brands_in_text: list[str] = Field(default_factory=list)
+    hidden_input_count: int = 0
+    form_count: int = 0
+    bytes_read: int = 0
+    error: Optional[str] = None
+
+
 class BrandMatch(BaseModel):
     """Найденная имперсонация бренда."""
     brand: str

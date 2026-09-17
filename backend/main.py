@@ -22,16 +22,25 @@ from http_client import close_client, init_client
 from models import (
     AiVerdictResult,
     BatchScanRequest,
+    CtResult,
     DomainAgeResult,
     ReputationResult,
+    PageResult,
     ScanRequest,
     ScanResponse,
     ThreatIntelResult,
+    TlsResult,
 )
 from pipeline import ai_analyzer as ai_module
+from pipeline import ct_logs as ct_module
+from pipeline import page_analyzer as page_module
+from pipeline import tls_check as tls_module
 from pipeline import domain_age as domain_age_module
 from pipeline import reputation as reputation_module
 from pipeline.ai_analyzer import analyze_with_ai
+from pipeline.ct_logs import check_ct_logs
+from pipeline.page_analyzer import analyze_page
+from pipeline.tls_check import check_tls
 from pipeline.domain_age import check_domain_age
 from pipeline.lexical_analyzer import lexical_analyzer
 from pipeline.reputation import check_urlhaus
@@ -170,6 +179,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ── Ядро: один скан ───────────────────────────────────────────────
 
+async def _skip(model_cls):
+    """Заглушка для уровня, который решили не запускать."""
+    return model_cls(checked=False, error="Пропущено: доверенный домен")
+
+
 async def _run_pipeline(original_url: str) -> ScanResponse:
     """Прогоняет URL через все уровни. Каждый уровень деградирует
     сам и возвращает checked=False — ошибки здесь не ловятся."""
@@ -191,13 +205,22 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
     # return_exceptions=True гарантирует, что падение одного уровня
     # не отменит остальные: gather по умолчанию пробрасывает первое
     # исключение и бросает результаты других задач.
-    gsb_result, rep_result, age_result, ai_result = await asyncio.gather(
+    # Доверенные домены не гоняем через дорогие уровни: там уже всё
+    # решено потолком доверия, а страница и журналы стоят времени.
+    heavy = not lexical.is_trusted_domain
+
+    results = await asyncio.gather(
         check_google_safe_browsing(scanned_url),
         check_urlhaus(scanned_url, lexical.host),
         check_domain_age(lexical.registered_domain),
         analyze_with_ai(scanned_url, lexical),
+        check_tls(scanned_url),
+        check_ct_logs(lexical.registered_domain) if heavy else _skip(CtResult),
+        analyze_page(scanned_url) if heavy else _skip(PageResult),
         return_exceptions=True,
     )
+    (gsb_result, rep_result, age_result, ai_result,
+     tls_result, ct_result, page_result) = results
 
     def _unwrap(result, fallback, name):
         if isinstance(result, BaseException):
@@ -209,6 +232,9 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
     reputation = _unwrap(rep_result, ReputationResult(checked=False, error="stage failed"), "urlhaus")
     age = _unwrap(age_result, DomainAgeResult(checked=False, error="stage failed"), "domain_age")
     ai = _unwrap(ai_result, AiVerdictResult(checked=False, error="stage failed"), "ai")
+    tls = _unwrap(tls_result, TlsResult(checked=False, error="stage failed"), "tls")
+    ct = _unwrap(ct_result, CtResult(checked=False, error="stage failed"), "ct")
+    page = _unwrap(page_result, PageResult(checked=False, error="stage failed"), "page")
 
     # ── Уровень 4: агрегация ─────────────────────────────────────
     response = calculate_risk_score(
@@ -220,6 +246,9 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
         lexical=lexical,
         redirects=redirects,
         ai=ai,
+        tls=tls,
+        ct=ct,
+        page=page,
     )
     response.elapsed_ms = int((time.perf_counter() - started) * 1000)
     return response
@@ -279,6 +308,9 @@ async def health_check():
             "rdap": True,
             "lexical": True,
             "ai": bool(settings.ANTHROPIC_API_KEY) and settings.AI_ENABLED,
+            "tls": settings.TLS_ENABLED,
+            "ct_logs": settings.CT_ENABLED,
+            "page_content": settings.PAGE_ENABLED,
         },
         "ssrf_protection": settings.BLOCK_PRIVATE_ADDRESSES,
     }
@@ -292,6 +324,9 @@ async def stats():
         "domain_age_cache": domain_age_module.cache_stats(),
         "reputation_cache": reputation_module.cache_stats(),
         "ai_cache": ai_module.cache_stats(),
+        "tls_cache": tls_module.cache_stats(),
+        "ct_cache": ct_module.cache_stats(),
+        "page_cache": page_module.cache_stats(),
     }
 
 
