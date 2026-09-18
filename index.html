@@ -199,6 +199,12 @@
             .m-lang button.on { background:#1b2331;color:#fff; }
             .m-link { background:none;border:none;color:#8a94a6;font-size:16px;
                       cursor:pointer;padding:6px; }
+            .m-team { display:block;margin-top:24px;padding:16px 18px;border-radius:16px;
+                      background:#111720;border:1px solid #1e2634;text-decoration:none;
+                      color:#c2cbd8;font-size:16px;font-weight:600; }
+            .m-team:active { opacity:.72; }
+            .m-team-sub { display:block;margin-top:4px;font-size:13px;
+                          font-weight:400;color:#5c6679; }
         }
     </style>
 </head>
@@ -367,6 +373,13 @@
             <p class="m-label" data-i18n="m_last">ПОСЛЕДНЯЯ ПРОВЕРКА</p>
             <div id="mLast"></div>
         </div>
+        <div class="m-spacer"></div>
+        <!-- Обратная связь. В макетах её не было, но звать людей искать
+             баги и не дать им способа написать — так себе идея. -->
+        <a href="api.html" class="m-team">
+            <span data-i18n="m_team">О команде и обратная связь</span>
+            <span class="m-team-sub" data-i18n="m_team_sub">Нашли ошибку или есть вопрос — напишите нам</span>
+        </a>
     </section>
 
     <!-- Экран 2: идёт проверка -->
@@ -616,6 +629,8 @@ const I18N = {
         m_ago_now:'только что', m_ago_min:'мин. назад', m_ago_h:'ч. назад',
         m_ago_yest:'вчера', m_ago_days:'дн. назад',
         m_paste_fail:'Браузер не дал доступ к буферу — вставьте вручную',
+        m_team:'О команде и обратная связь',
+        m_team_sub:'Нашли ошибку или есть вопрос — напишите нам',
     },
     en: {
         nav_api:'Team', nav_scanner:'Scanner',
@@ -683,6 +698,8 @@ const I18N = {
         m_ago_now:'just now', m_ago_min:'min ago', m_ago_h:'h ago',
         m_ago_yest:'yesterday', m_ago_days:'d ago',
         m_paste_fail:'The browser denied clipboard access — paste manually',
+        m_team:'About the team and feedback',
+        m_team_sub:'Found a bug or have a question — write to us',
     },
 };
 

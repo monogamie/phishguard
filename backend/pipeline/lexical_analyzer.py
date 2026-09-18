@@ -282,6 +282,21 @@ class LexicalAnalyzer:
         is_trusted = trust_domain in TRUSTED_DOMAINS
 
         keywords = self._find_keywords(path_and_query, decoded_host, is_trusted)
+        is_ip = self._is_ip_host(host)
+        brand = self._match_brand(host, decoded_host, sld,
+                                  registered_domain, subdomains)
+
+        # Цифры в имени — слабый намёк на подмену букв (0 вместо o,
+        # 1 вместо l). Но у IP-адреса цифры и есть адрес, а у опечатки
+        # вроде `paypa1` именно цифра и делает её опечаткой — там этот
+        # же символ уже посчитан признаком бренда. В обоих случаях
+        # признак не добавляет знания, только балл.
+        digits_mean_something = (
+            bool(re.search(r"\d", sld_human))
+            and not is_trusted
+            and not is_ip
+            and not (brand and brand.kind in ("typosquat", "homograph"))
+        )
 
         features = LexicalFeatures(
             scheme                = scheme,
@@ -289,7 +304,7 @@ class LexicalAnalyzer:
             registered_domain     = registered_domain,
             tld                   = suffix,
             decoded_host          = decoded_host if decoded_host != host else None,
-            has_ip_address        = self._is_ip_host(host),
+            has_ip_address        = is_ip,
             has_at_symbol         = "@" in netloc,
             has_punycode          = any(l.startswith("xn--") for l in host.split(".")),
             idn_is_native         = idn_native,
@@ -298,7 +313,7 @@ class LexicalAnalyzer:
             has_non_standard_port = self._is_non_standard_port(port, scheme, port_malformed),
             has_encoded_host      = has_encoded_host,
             has_redirect_params   = bool(_REDIRECT_PARAMS_RE.search(raw)),
-            has_digits_in_domain  = bool(re.search(r"\d", sld_human)) and not is_trusted,
+            has_digits_in_domain  = digits_mean_something,
             is_insecure_scheme    = scheme == "http",
             is_shortener          = registered_domain in _SHORTENER_DOMAINS,
             subdomain_count       = len([s for s in subdomains if s != "www"]),
@@ -313,9 +328,7 @@ class LexicalAnalyzer:
             abused_tld            = self._is_abused_tld(suffix),
             is_trusted_domain     = is_trusted,
             trust_domain          = trust_domain,
-            brand_match           = self._match_brand(
-                                        host, decoded_host, sld,
-                                        registered_domain, subdomains),
+            brand_match           = brand,
         )
 
         logger.debug("Lexical features for %s: %s", host, features.model_dump())
