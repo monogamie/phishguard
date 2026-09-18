@@ -91,13 +91,22 @@
         @media (max-width: 640px) {
             body > .bg-glow, body > nav, body > main, body > footer { display:none !important; }
             body { background:#0a0d12;overflow-x:hidden; }
+            /* Своё box-sizing, а не Tailwind'овский: если CDN не ответил,
+               размеры не должны разъезжаться. Без этого экран считался
+               по content-box, нижний отступ не попадал внутрь min-height,
+               и последний блок уезжал под панель вкладок. */
+            #mobileApp, #mobileApp * { box-sizing:border-box; }
             #mobileApp {
                 display:block;position:fixed;inset:0;overflow-y:auto;
                 -webkit-overflow-scrolling:touch;background:#0a0d12;
-                padding:0 20px calc(88px + env(safe-area-inset-bottom)) 20px;
+                padding:0 20px;
             }
+            /* Зазор снизу держим НА САМОМ экране, а не на контейнере:
+               панель вкладок висит поверх (position:fixed) и перекрывает
+               последние 76px. 96 — это она плюс воздух. */
             .m-screen { display:none;min-height:100%;flex-direction:column;
-                        padding-top:calc(16px + env(safe-area-inset-top)); }
+                        padding-top:calc(16px + env(safe-area-inset-top));
+                        padding-bottom:calc(96px + env(safe-area-inset-bottom)); }
             .m-screen.on { display:flex; }
             .m-top { display:flex;align-items:center;justify-content:space-between;
                      min-height:56px;margin-bottom:28px; }
