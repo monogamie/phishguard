@@ -31,16 +31,18 @@ def _score(url=NEUTRAL_URL, **over):
     ровно одной подмены."""
     kw = dict(
         gsb=ThreatIntelResult(checked=True, is_threat=False),
-        reputation=ReputationResult(checked=True),
+        reputation=over.pop("reputation", ReputationResult(checked=True)),
         domain_age=DomainAgeResult(checked=True, age_days=3000),
         tls=TlsResult(checked=True, age_days=200, expired=False,
                       self_signed=False, covers_domain=True, issuer="Let's Encrypt"),
         ct=CtResult(checked=True, first_seen_days=3000, total_certs=30),
         page=PageResult(checked=True, status_code=200, form_count=1, bytes_read=5000),
     )
+    lexical = over.pop("lexical", None) or lexical_analyzer.analyze(url)
+    if "age" in over:
+        kw["domain_age"] = over.pop("age")
     kw.update(over)
-    return calculate_risk_score(url=url, original_url=url,
-                                lexical=lexical_analyzer.analyze(url), **kw)
+    return calculate_risk_score(url=url, original_url=url, lexical=lexical, **kw)
 
 
 def _weighted(result):
@@ -194,3 +196,59 @@ def test_shortener_cap_does_not_hide_page_evidence():
     )
     assert result.verdict == Verdict.PHISHING, (
         f"полный набор улик упёрся в потолок сокращателя: {result.risk_score}")
+
+
+# ── Регрессии 19 сентября: подмена анализируемого домена ─────────
+# Обе находки — про одно: жертва уходит на один сайт, мы проверяем
+# другой и говорим «безопасно». Разными способами, чинятся по-разному.
+
+@pytest.mark.parametrize("url,real_host", [
+    # `%2F` раскодируется в `/`, граница логин/хост уезжает, и вместо
+    # злого сайта разбирается доверенный домен из логина.
+    ("https://sberbank.ru%2Flogin@evil-phish.top/verify", "evil-phish.top"),
+    ("https://google.com%2Fsearch@192.168.0.1/admin", "192.168.0.1"),
+    ("https://gosuslugi.ru%3Fx@zloy-sayt.top/", "zloy-sayt.top"),
+    # Обратный слеш браузер считает разделителем, а urlsplit — нет.
+    ("https://evil.top\\@sberbank.ru/", "evil.top"),
+    ("https://zloy.top\\x\\@google.com/a", "zloy.top"),
+])
+def test_we_analyze_the_host_the_browser_goes_to(url, real_host):
+    features = lexical_analyzer.analyze(url)
+    assert features.host == real_host, (
+        f"жертва уйдёт на {real_host}, а мы разбираем {features.host}"
+    )
+    assert features.is_trusted_domain is False, (
+        "домен из логина не должен давать потолок доверия"
+    )
+
+
+@pytest.mark.parametrize("url", [
+    "https://sberbank.ru%2Flogin@evil-phish.top/verify",
+    "https://evil.top\\@sberbank.ru/",
+])
+def test_hidden_host_does_not_come_out_safe(url):
+    """Худший исход — не пропуск, а уверенное «БЕЗОПАСНО»: именно так
+    выглядела дыра на живом сайте (0 баллов, достоверность 1.0)."""
+    result = _score(url=url, age=DomainAgeResult(checked=True, age_days=3))
+    assert result.verdict != Verdict.SAFE, f"{url}: {result.risk_score}"
+
+
+def test_shared_platform_is_not_condemned_by_other_peoples_malware():
+    """
+    URLhaus ведёт учёт по ХОСТУ, а на github.com и docs.google.com
+    пользовательских вредоносных ссылок тысячи. С полом в 90 баллов
+    «ОПАСНО» получали github.com, t.me и dropbox.com — проверено живьём.
+    """
+    from models import LexicalFeatures
+    trusted = LexicalFeatures(registered_domain="github.com", scheme="https",
+                              trust_domain="github.com", is_trusted_domain=True)
+    result = _score(lexical=trusted,
+                    reputation=ReputationResult(checked=True, host_listed=True,
+                                                host_url_count=4200))
+    assert result.verdict == Verdict.SAFE, f"github.com: {result.risk_score}"
+
+    # А сама ссылка в базе — по-прежнему приговор, даже на GitHub.
+    exact = _score(lexical=trusted,
+                   reputation=ReputationResult(checked=True, url_listed=True,
+                                               host_listed=True, threat="malware"))
+    assert exact.verdict == Verdict.PHISHING

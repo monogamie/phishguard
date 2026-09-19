@@ -22,6 +22,7 @@ from models import BrandMatch, LexicalFeatures
 from normalize import (
     canonical,
     decode_punycode,
+    normalize_authority,
     to_ascii_host,
     fold_homoglyphs,
     has_non_ascii,
@@ -216,20 +217,33 @@ class LexicalAnalyzer:
         """
         raw = url or ""
 
+        # Обратный слеш браузер считает разделителем, а urlsplit — нет.
+        # Без этого мы разбирали бы не тот домен, куда уйдёт жертва.
+        raw = normalize_authority(raw)
+
         # ПОРЯДОК ВАЖЕН: %XX ищем ДО unquote, иначе искать уже нечего.
         raw_netloc = self._safe_netloc(raw)
-        has_encoded_host = bool(_PERCENT_ENCODED_RE.search(raw_netloc.split("@")[-1]))
+        raw_userinfo, _, raw_host_part = raw_netloc.rpartition("@")
+        has_encoded_host = bool(_PERCENT_ENCODED_RE.search(raw_host_part))
+        # Кодирование в ЛОГИНЕ — отдельный приём: `%2F` раскодируется в
+        # `/`, граница между логином и хостом уезжает, и адрес
+        # `bank.ru%2Flogin@злой.сайт` выглядит как безобидный bank.ru.
+        has_encoded_userinfo = bool(_PERCENT_ENCODED_RE.search(raw_userinfo))
+
+        # Разбираем СЫРОЙ адрес, а не раскодированный: unquote до
+        # urlsplit ломает структуру и подменяет анализируемый домен.
+        # Раскодируем только путь и параметры — там оно безопасно и
+        # нужно, чтобы найти спрятанные слова.
+        try:
+            parsed = urlsplit(raw)
+        except ValueError:
+            logger.warning("urlsplit failed for %r", raw[:120])
+            return LexicalFeatures(url_length=len(raw))
 
         try:
             decoded_url = unquote(raw)
         except Exception:
             decoded_url = raw
-
-        try:
-            parsed = urlsplit(decoded_url)
-        except ValueError:
-            logger.warning("urlsplit failed for %r", raw[:120])
-            return LexicalFeatures(url_length=len(raw))
 
         scheme = (parsed.scheme or "https").lower()
 
@@ -253,7 +267,11 @@ class LexicalAnalyzer:
         except ValueError:
             netloc = raw_netloc
 
-        path_and_query = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        raw_path_and_query = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        try:
+            path_and_query = unquote(raw_path_and_query)
+        except Exception:                              # noqa: BLE001
+            path_and_query = raw_path_and_query
 
         ext = _extract(host if host else decoded_url)
         sld = ext.domain.lower()
@@ -311,7 +329,7 @@ class LexicalAnalyzer:
             has_non_ascii_host    = has_non_ascii(decoded_host) and not idn_native,
             has_mixed_scripts     = self._has_mixed_scripts(decoded_host),
             has_non_standard_port = self._is_non_standard_port(port, scheme, port_malformed),
-            has_encoded_host      = has_encoded_host,
+            has_encoded_host      = has_encoded_host or has_encoded_userinfo,
             has_redirect_params   = bool(_REDIRECT_PARAMS_RE.search(raw)),
             has_digits_in_domain  = digits_mean_something,
             is_insecure_scheme    = scheme == "http",
@@ -339,26 +357,29 @@ class LexicalAnalyzer:
     @staticmethod
     def _idn_is_native(human_host: str) -> bool:
         """
-        True, если нелатинское имя для этой зоны нормально.
+        True, если нелатиница в домене ожидаема, а не прячется.
 
-        `мвд.рф` иначе и не записать. А вот кириллица под `.com` —
-        попытка выдать себя за латиницу, и её мы по-прежнему считаем
-        признаком риска. Признак «родного» IDN: и имя, и зона — одна
-        и та же нелатинская письменность.
+        Прячется она одним способом: КОГДА В ОДНОМ СЛОВЕ смешаны
+        алфавиты. `аpple.com` — кириллическая «а» плюс латинские
+        «pple» — на глаз неотличим от настоящего.
 
-        Смотрит только на человеческий вид: адрес могли набрать и
-        русскими буквами, и через xn--, а признак обязан выйти один
-        и тот же, иначе один сайт получает два разных вердикта.
+        А вот `мвд.рф`, `www.мвд.рф`, `société.fr`, `bücher.de` ничего
+        не прячут: каждое слово там написано целиком на одном алфавите.
+        Раньше проверка требовала, чтобы ВЕСЬ адрес был одной
+        нелатинской письменностью, и ломалась от приставки `www`
+        (`www.мвд.рф` — 90 баллов и «ОПАСНО») и от любой латинской зоны
+        (`société.fr` — 75). Для сервиса, который читают люди со всего
+        мира, это было хуже пропуска.
+
+        Полностью нелатинскую подделку под бренд (`аррӏе.com`) ловит
+        отдельный детектор брендов, и его вес выше.
         """
         labels = [l for l in human_host.split(".") if l]
         if len(labels) < 2:
             return False
-        tld_scripts = scripts_of(labels[-1])
-        name_scripts = scripts_of("".join(labels[:-1]))
-        # Зона должна быть нелатинской: .рф, .бел, .укр, .москва.
-        if not tld_scripts or tld_scripts == {"LATIN"}:
+        if not has_non_ascii(human_host):
             return False
-        return name_scripts and name_scripts == tld_scripts
+        return not any(mixed_scripts(label) for label in labels)
 
     @staticmethod
     def _safe_netloc(raw: str) -> str:
