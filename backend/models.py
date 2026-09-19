@@ -245,6 +245,7 @@ class LexicalFeatures(BaseModel):
     domain_length:         int = 0
     hyphen_count:          int = 0
     trigger_keywords:      list[str] = Field(default_factory=list)
+    keywords_in_host:      bool = False   # слова в имени домена, а не в пути
     suspicious_tld:        bool = False
     abused_tld:            bool = False
     scam_pattern:          Optional[str] = None   # fake_vote | fake_payout | fake_prize

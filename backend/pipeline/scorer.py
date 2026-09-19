@@ -554,11 +554,24 @@ def calculate_risk_score(
     if lexical.trigger_keywords:
         words = ", ".join(lexical.trigger_keywords[:6])
         many = len(lexical.trigger_keywords) >= 2
-        c.add("TRIGGER_KEYWORDS", Severity.WARN if many else Severity.INFO,
-              "Тревожные слова в адресе",
-              f"Найдено: {words}. Такие слова создают ощущение срочности "
-              f"и подталкивают ввести данные",
-              weight_key="trigger_keywords_many" if many else "trigger_keywords")
+        if lexical.keywords_in_host:
+            # Слова в ИМЕНИ домена — так мошенник называет свой сайт,
+            # чтобы тот выглядел служебным: `secure-login-verify.top`.
+            c.add("TRIGGER_KEYWORDS", Severity.WARN if many else Severity.INFO,
+                  "Тревожные слова в имени домена",
+                  f"Найдено: {words}. В самом имени домена такие слова "
+                  f"ставят, чтобы он выглядел официальным",
+                  weight_key="trigger_keywords_many" if many else "trigger_keywords")
+        else:
+            # А в пути они есть у КАЖДОЙ честной страницы входа:
+            # `tele2.ru/security/password/recovery`. Показываем, но не
+            # ставим в вину — иначе личные кабинеты половины страны
+            # получают «ПОДОЗРИТЕЛЬНО» за то, что они личные кабинеты.
+            c.add("TRIGGER_KEYWORDS_PATH", Severity.INFO,
+                  "Слова входа в адресе страницы",
+                  f"Найдено: {words}. На странице входа это обычное дело, "
+                  f"само по себе ни о чём не говорит",
+                  weight=0)
 
     if lexical.suspicious_tld:
         c.add("SUSPICIOUS_TLD", Severity.WARN, "Подозрительная зона",

@@ -295,3 +295,35 @@ def test_www_is_not_a_domain_change():
     assert _registrable_host("https://tele2.ru/") == _registrable_host("https://msk.tele2.ru/lk")
     # А настоящая смена домена должна остаться сменой.
     assert _registrable_host("https://bit.ly/x") != _registrable_host("https://zloy.top/")
+
+
+@pytest.mark.parametrize("url", [
+    "https://cabinet.tele2.ru/security/password/recovery",
+    "https://id.rbc.ru/auth/login",
+    "https://lk.megafon.ru/login",
+    "https://passport.yandex.ru/auth",
+])
+def test_an_honest_login_page_is_not_suspicious(url):
+    """
+    На настоящей странице входа всегда есть `login`, `password`,
+    `security`, `recovery` — потому что это страница входа. Пока слова
+    в ПУТИ весили столько же, сколько в имени домена, личные кабинеты
+    половины страны набирали на «ПОДОЗРИТЕЛЬНО».
+    """
+    result = _score(url=url, age=DomainAgeResult(checked=True, age_days=4000))
+    assert result.verdict == Verdict.SAFE, (
+        f"{url}: {result.risk_score}, "
+        f"{[(s.code, s.weight) for s in result.signals if s.weight]}"
+    )
+
+
+@pytest.mark.parametrize("url", [
+    "https://secure-login-verify.top/",
+    "https://sberbank-vhod-online.top/",
+    "https://bank-of-america.secure-login.xyz/verify",
+])
+def test_keywords_in_the_domain_name_still_count(url):
+    """А вот так мошенник называет СВОЙ домен, чтобы он выглядел
+    служебным. Это разные вещи, и оговорка выше сюда не тянется."""
+    result = _score(url=url, age=DomainAgeResult(checked=True, age_days=20))
+    assert result.verdict == Verdict.PHISHING, f"{url}: {result.risk_score}"

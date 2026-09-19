@@ -358,6 +358,7 @@ class LexicalAnalyzer:
             domain_length         = len(sld_human),
             hyphen_count          = decoded_host.count("-"),
             trigger_keywords      = keywords,
+            keywords_in_host      = self._keywords_in_host(sld_human, is_trusted),
             scam_pattern          = (None if is_trusted else
                                      _match_scam_pattern(
                                          f"{path_and_query} {decoded_host}")),
@@ -472,6 +473,26 @@ class LexicalAnalyzer:
         haystack = f"{path_and_query} {host}"
         found = {m.group(1).lower() for m in _KEYWORD_RE.finditer(haystack)}
         return sorted(found)
+
+    @staticmethod
+    def _keywords_in_host(sld: str, is_trusted: bool) -> bool:
+        """
+        Стоят ли слова-маркеры в САМОМ ИМЕНИ домена.
+
+        Разница принципиальная. `secure-login-verify.top` — так
+        мошенник называет свой домен, чтобы он выглядел служебным.
+        А `tele2.ru/security/password/recovery` — обычное устройство
+        адресов настоящего сайта: слова входа есть на КАЖДОЙ честной
+        странице входа. Пока и то и другое весило одинаково, честные
+        личные кабинеты набирали на «ПОДОЗРИТЕЛЬНО».
+
+        Смотрим только РЕГИСТРИРУЕМОЕ имя, без поддоменов: `id.rbc.ru`,
+        `lk.megafon.ru`, `cabinet.tele2.ru` — это как раз честные сайты,
+        и поддомен «id» им не в упрёк.
+        """
+        if is_trusted:
+            return False
+        return bool(_KEYWORD_RE.search(sld))
 
     @staticmethod
     def _match_brand(host: str, decoded_host: str, sld: str,
