@@ -252,3 +252,46 @@ def test_shared_platform_is_not_condemned_by_other_peoples_malware():
                    reputation=ReputationResult(checked=True, url_listed=True,
                                                host_listed=True, threat="malware"))
     assert exact.verdict == Verdict.PHISHING
+
+
+# ── Ложные тревоги на честных сайтах ─────────────────────────────
+
+@pytest.mark.parametrize("url", [
+    "https://github.blog/",      # блог самого GitHub
+    "https://yandex.by/",
+    "https://alfabank.by/",
+    "https://ozon.travel/",
+    "https://google.de/",
+])
+def test_brand_on_its_own_other_domain_is_not_impersonation(url):
+    """
+    Полного списка доменов Google не существует, и всё, что не попало
+    в словарь, объявлялось подделкой: `github.blog` получал 45 баллов
+    за имперсонацию GitHub, а живьём — 75 и «ОПАСНО».
+
+    Признак: имя домена — РОВНО бренд, а зона приличная.
+    """
+    assert lexical_analyzer.analyze(url).brand_match is None, url
+
+
+@pytest.mark.parametrize("url", [
+    "https://paypal.tk/",        # то же имя, но зона бесплатная
+    "https://sberbank.top/",
+    "https://paypa1.com/",       # опечатка: имя НЕ равно бренду
+    "https://sberbank-vhod.top/",
+    "https://paypal.com.evil.ru/",
+])
+def test_squatting_is_still_caught(url):
+    """Оговорка выше не должна открыть дорогу захватчикам."""
+    assert lexical_analyzer.analyze(url).brand_match is not None, url
+
+
+def test_www_is_not_a_domain_change():
+    """`e1.ru → www.e1.ru` — обычная канонизация, её делает половина
+    интернета. Сравнение шло по полному хосту, и честные сайты вне
+    списка доверия получали за это 20 баллов."""
+    from url_resolver import _registrable_host
+    assert _registrable_host("https://e1.ru/") == _registrable_host("https://www.e1.ru/")
+    assert _registrable_host("https://tele2.ru/") == _registrable_host("https://msk.tele2.ru/lk")
+    # А настоящая смена домена должна остаться сменой.
+    assert _registrable_host("https://bit.ly/x") != _registrable_host("https://zloy.top/")

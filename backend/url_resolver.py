@@ -22,11 +22,23 @@ REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
 def _registrable_host(url: str) -> str:
-    """Хост URL в нижнем регистре, без порта. Пустая строка при ошибке."""
+    """
+    Регистрируемый домен (eTLD+1) в нижнем регистре.
+
+    Именно домен, а не хост целиком: раньше возвращался полный хост, и
+    переход `e1.ru → www.e1.ru` — обычная канонизация, которую делает
+    половина интернета — считался сменой домена и давал 20 баллов
+    честным сайтам.
+    """
     try:
-        return (urlsplit(url).hostname or "").lower()
+        host = (urlsplit(url).hostname or "").lower()
     except ValueError:
         return ""
+    if not host:
+        return ""
+    from pipeline.lexical_analyzer import _extract
+    ext = _extract(host)
+    return f"{ext.domain}.{ext.suffix}" if ext.suffix and ext.domain else host
 
 
 async def _one_hop(client: httpx.AsyncClient, url: str) -> httpx.Response | None:

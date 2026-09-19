@@ -125,8 +125,18 @@ async def _lookup_rdap(domain: str) -> Optional[DomainAgeResult]:
         return None
 
     if resp.status_code == 404:
-        # Домен не зарегистрирован. Это ЗНАЧИМЫЙ результат, а не ошибка:
-        # ссылка ведёт на несуществующий домен.
+        # У 404 два разных смысла, и путать их нельзя.
+        #
+        # «Нет службы RDAP для этого ресурса» означает, что справочник
+        # не обслуживает эту ЗОНУ, — а вовсе не то, что домена нет.
+        # Для `.рф` это ровно так, и сервис заявлял, что домен МВД не
+        # зарегистрирован. Врать про проверяемый факт мы не имеем права.
+        # Возвращаем None: пусть пробует WHOIS, он зону знает.
+        if "no rdap service" in resp.text[:400].lower():
+            logger.info("RDAP does not serve the zone of %s", domain)
+            return None
+        # А пустой 404 — это честное «такого домена нет». Значимый
+        # результат: ссылка ведёт в никуда.
         return DomainAgeResult(checked=True, age_days=None, source="rdap",
                                error="Домен не зарегистрирован")
     if resp.status_code != 200:

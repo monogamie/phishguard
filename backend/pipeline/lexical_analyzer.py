@@ -302,7 +302,7 @@ class LexicalAnalyzer:
         keywords = self._find_keywords(path_and_query, decoded_host, is_trusted)
         is_ip = self._is_ip_host(host)
         brand = self._match_brand(host, decoded_host, sld,
-                                  registered_domain, subdomains)
+                                  registered_domain, subdomains, suffix)
 
         # Цифры в имени — слабый намёк на подмену букв (0 вместо o,
         # 1 вместо l). Но у IP-адреса цифры и есть адрес, а у опечатки
@@ -456,8 +456,8 @@ class LexicalAnalyzer:
 
     @staticmethod
     def _match_brand(host: str, decoded_host: str, sld: str,
-                     registered_domain: str,
-                     subdomains: list[str]) -> Optional[BrandMatch]:
+                     registered_domain: str, subdomains: list[str],
+                     suffix: str = "") -> Optional[BrandMatch]:
         """
         Детект имперсонации бренда — три независимых техники.
 
@@ -498,7 +498,25 @@ class LexicalAnalyzer:
 
         was_obfuscated = has_non_ascii(host) or "xn--" in host
 
+        zone_is_cheap = (LexicalAnalyzer._is_suspicious_tld(suffix)
+                         or LexicalAnalyzer._is_abused_tld(suffix))
+
         for brand, owned in BRAND_DOMAINS.items():
+            # Имя домена — РОВНО бренд, и зона приличная: это почти
+            # наверняка сам бренд в другой зоне (`github.blog`,
+            # `yandex.by`, `alfabank.by`, `ozon.travel`). Полного списка
+            # доменов Google не существует, дописывать их в словарь
+            # бесполезно — а обвинять компанию в подделке самой себя
+            # мы не вправе: 45 баллов и «ПОДОЗРИТЕЛЬНО» честным сайтам.
+            #
+            # `paypal.tk` выглядит так же, но зона бесплатная, и это уже
+            # приём захватчика — там оговорка не действует.
+            # Сравниваем ИСХОДНОЕ имя, а не свёрнутое: `paypa1` после
+            # свёртки leet-символов тоже даёт «paypal», и по свёрнутому
+            # оговорка накрыла бы настоящие опечаточные домены.
+            if sld == brand and not zone_is_cheap:
+                continue
+
             # Гомоглиф: после свёртки вышел бренд, а хост был не-ASCII.
             if was_obfuscated and homoglyph_sld == brand:
                 return BrandMatch(
