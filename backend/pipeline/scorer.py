@@ -33,8 +33,13 @@ logger = logging.getLogger(__name__)
 # если против него нет прямых улик от внешней разведки.
 TRUSTED_DOMAIN_SCORE_CAP = 15
 
-# Балл, выше которого не поднимается неразвёрнутая короткая ссылка:
-# «мы не знаем, куда она ведёт» — это подозрение, а не приговор.
+# Неразвёрнутая короткая ссылка: «мы не знаем, куда она ведёт».
+#
+# Это и ПОЛ, и потолок. Пол важнее: пока стоял только потолок, он не
+# срабатывал никогда — балл и так не доходил до 45, и человек видел
+# 15 и зелёное «БЕЗОПАСНО» на ссылку, о которой мы не знаем ничего.
+# Ровно сценарий из истории проекта: ссылку прислали сокращённой.
+UNRESOLVED_SHORTENER_FLOOR = 35
 UNRESOLVED_SHORTENER_CAP = 45
 
 
@@ -154,7 +159,7 @@ def calculate_risk_score(
     elif redirects is not None and redirects.was_shortener and not redirects.resolved:
         c.add("SHORTENER_UNRESOLVED", Severity.WARN, "Ссылка не развёрнута",
               "Это сокращённая ссылка, но развернуть её не удалось — "
-              "конечный адрес неизвестен",
+              "куда она ведёт, неизвестно. Считайте её незнакомой",
               weight_key="shortener")
 
     # ── Уровень 1: Google Safe Browsing ──────────────────────────
@@ -351,7 +356,8 @@ def calculate_risk_score(
 
         # Бренд заявлен в тексте, но домен ему не принадлежит.
         foreign_brands = []
-        if page.brands_in_text and not lexical.is_trusted_domain:
+        if page.brands_in_text and (lexical.on_shared_platform
+                                    or not lexical.is_trusted_domain):
             foreign_brands = [
                 b for b in page.brands_in_text
                 if lexical.registered_domain not in BRAND_DOMAINS.get(b, ())
@@ -370,7 +376,17 @@ def calculate_risk_score(
         # а молодой стартап — 72, то есть «ОПАСНО». На поимку реального
         # фишинга признак при этом не влиял никак: в том случае с угоном
         # Telegram балл был 100 и с ним, и без него.
+        # На чужой площадке возраст берётся у самой площадки: у
+        # `pages.dev` и `telegra.ph` он годами, сколько бы минут ни было
+        # самой странице. Поэтому третье условие там не выполнялось
+        # никогда, и форма пароля вместе с кнопкой «войти через
+        # Telegram» — та самая связка из истории проекта — весили ноль.
+        #
+        # Само размещение на площадке, где публикует кто угодно, здесь
+        # и есть повод отнестись к форме пароля серьёзно.
         hard_evidence = bool(foreign_brands) or bool(page.cross_domain_form) or (
+            lexical.on_shared_platform
+        ) or (
             domain_age.checked and domain_age.age_days is not None
             and domain_age.age_days < settings.DOMAIN_AGE_VERY_NEW
         )
@@ -407,7 +423,8 @@ def calculate_risk_score(
                       f"входа ни о чём не говорит",
                       weight=0)
 
-        if page.has_password_field and not lexical.is_trusted_domain:
+        if page.has_password_field and (lexical.on_shared_platform
+                                        or not lexical.is_trusted_domain):
             if hard_evidence:
                 c.add("PAGE_PASSWORD_FORM", Severity.WARN, "Просит пароль",
                       "На странице есть поле для пароля. Вместе с остальными "
@@ -622,12 +639,35 @@ def calculate_risk_score(
     # ── Финальная нормализация ───────────────────────────────────
     score = c.score
 
+    # Улики, найденные НА САМОЙ странице, снимают послабления: и потолок
+    # доверия, и потолок неразвёрнутого сокращателя означают «мы не
+    # знаем, что там». Если уровень страницы дочитал её и принёс форму
+    # пароля или вход через мессенджер — мы знаем.
+    trusted_ceiling_applies = True
+    page_saw_something = page is not None and page.checked and bool(
+        page.cross_domain_form or page.messenger_login
+        or page.brands_in_text or page.has_password_field)
+
     # Правило 1: пол по внешней разведке.
     if external_hit:
         score = max(score, 90)
 
-    # Правило 2: потолок доверия (не применяется поверх внешних улик).
-    if lexical.is_trusted_domain and not external_hit:
+    # Правило 2: неразвёрнутый сокращатель.
+    if (lexical.is_shortener and redirects is not None
+            and not redirects.resolved and not external_hit
+            and not page_saw_something):
+        # Сначала пол, потом потолок: «не знаем» — это подозрение, но
+        # не приговор. И потолок доверия здесь не действует: значок
+        # «известный домен с проверенной репутацией» рядом с «куда
+        # ведёт — неизвестно» успокаивает ровно там, где не должен.
+        score = max(score, UNRESOLVED_SHORTENER_FLOOR)
+        score = min(score, UNRESOLVED_SHORTENER_CAP)
+        trusted_ceiling_applies = False
+
+    # Правило 2: потолок доверия (не применяется поверх внешних улик
+    # и поверх прямых улик, найденных на самой странице).
+    if (lexical.is_trusted_domain and not external_hit
+            and not page_saw_something and trusted_ceiling_applies):
         if score > TRUSTED_DOMAIN_SCORE_CAP:
             logger.info("Trusted domain %s: capping score %d → %d",
                         lexical.registered_domain, score, TRUSTED_DOMAIN_SCORE_CAP)
@@ -640,13 +680,6 @@ def calculate_risk_score(
     # страницы всё-таки дочитал её до конца и принёс улики, мы знаем —
     # и глушить их нечестно: полный набор признаков обмана упирался
     # в 45 баллов только потому, что адрес начинался с bit.ly.
-    page_saw_something = page is not None and page.checked and bool(
-        page.cross_domain_form or page.messenger_login
-        or page.brands_in_text or page.has_password_field)
-    if (lexical.is_shortener and redirects is not None
-            and not redirects.resolved and not external_hit
-            and not page_saw_something):
-        score = min(score, UNRESOLVED_SHORTENER_CAP)
 
     score = max(0, min(score, 100))
     verdict = _verdict(score)

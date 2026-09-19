@@ -227,6 +227,7 @@ class LexicalFeatures(BaseModel):
     host:                  str = ""
     registered_domain:     str = ""
     trust_domain:          str = ""    # единица доверия (приватный PSL)
+    on_shared_platform:    bool = False   # страницу публикует кто угодно
     tld:                   str = ""
     has_ip_address:        bool = False
     has_at_symbol:         bool = False

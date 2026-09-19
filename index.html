@@ -1008,16 +1008,10 @@ function nativeIdn(displayHost) {
     // остаётся подозрительной: она прячется под латиницу.
     const labels = displayHost.split('.').filter(Boolean);
     if (labels.length < 2) return false;
-    const script = label => ({
-        latin:    /[a-z]/i.test(label),
-        cyrillic: /[\u0400-\u04ff]/.test(label),
-        greek:    /[\u0370-\u03ff]/.test(label),
-    });
-    const tld  = script(labels[labels.length - 1]);
-    const name = script(labels.slice(0, -1).join(''));
-    if (tld.latin || (!tld.cyrillic && !tld.greek)) return false;
-    return (tld.cyrillic && name.cyrillic && !name.latin)
-        || (tld.greek    && name.greek    && !name.latin);
+    if (!hasNonAscii(displayHost)) return false;
+    // Нелатиница прячет что-то только когда алфавиты смешаны ВНУТРИ
+    // одного слова. `www.мвд.рф`, `société.fr`, `bücher.de` не прячут.
+    return !labels.some(mixedScripts);
 }
 
 function levenshtein(a, b, max) {
@@ -1116,6 +1110,7 @@ const BRANDS = {
 };
 
 const BRAND_OWNED = new Set(Object.values(BRANDS).flat());
+const BRAND_NAMES = new Set(Object.keys(BRANDS));
 
 const TRUSTED = new Set([...BRAND_OWNED,
     'wikipedia.org','wikimedia.org','twitter.com','x.com','reddit.com','twitch.tv',
@@ -1300,6 +1295,14 @@ function normalizeUrl(s) {
 function findBrand(host, sld, registered, subs, displayHost, displaySld) {
     if (BRAND_OWNED.has(registered)) return null;
 
+    // Имя домена — РОВНО бренд, зона приличная: это сам бренд в другой
+    // зоне (`github.blog`, `yandex.by`). Полного списка доменов Google
+    // не существует, обвинять их в подделке самих себя нельзя.
+    // У `paypal.tk` зона бесплатная — там оговорка не действует.
+    const zone = (registered.split('.').pop() || '');
+    const cheapZone = SUSPICIOUS_TLDS.has(zone) || ABUSED_TLDS.has(zone);
+    if (!cheapZone && BRAND_NAMES.has((sld || '').toLowerCase())) return null;
+
     // Для поиска гомоглифов сравниваем то, что ВИДИТ пользователь
     // (раскодированный Unicode), а не ASCII-форму из new URL().
     const canonSld    = canonical(displaySld || sld);
@@ -1377,7 +1380,12 @@ function engineLocal(rawInput) {
         if (nativeIdn(displayHost)) ok('PUNYCODE_NATIVE');
         else add('PUNYCODE', 'warn', W.punycode, host + ' \u2192 ' + displayHost);
     }
-    if (displayHost.split('.').some(mixedScripts)) {
+    // Гомоглиф бренда — это И ЕСТЬ смешение алфавитов, только названное
+    // точнее и весом больше. Сервер перестал их дублировать 18 сентября,
+    // а сюда правка не доехала: страница давала 100 там, где сервер 65.
+    if (brand && brand.kind === 'homograph') {
+        /* уже сказано признаком бренда */
+    } else if (displayHost.split('.').some(mixedScripts)) {
         add('MIXED_SCRIPTS', 'danger', W.mixed_scripts, displayHost);
     } else if (hasNonAscii(displayHost) && !nativeIdn(displayHost)) {
         // Для .рф кириллица в имени — норма, а не признак подмены.
@@ -1445,11 +1453,24 @@ function engineLocal(rawInput) {
         KEYWORD_RE.lastIndex = 0;
         const found = [...new Set((path + ' ' + displayHost).toLowerCase().match(KEYWORD_RE) || [])].sort();
         if (found.length) {
+            KEYWORD_RE.lastIndex = 0;
+            // Слова в ИМЕНИ домена — приём мошенника. Те же слова в пути
+            // есть у каждой честной страницы входа: без веса.
+            const inName = KEYWORD_RE.test((displaySld || sld).toLowerCase());
+            KEYWORD_RE.lastIndex = 0;
             const many = found.length >= 2;
-            add('TRIGGER_KEYWORDS', many ? 'warn' : 'info',
-                many ? W.trigger_keywords_many : W.trigger_keywords, found.slice(0, 6).join(', '));
+            if (inName) {
+                add('TRIGGER_KEYWORDS', many ? 'warn' : 'info',
+                    many ? W.trigger_keywords_many : W.trigger_keywords, found.slice(0, 6).join(', '));
+            } else {
+                add('TRIGGER_KEYWORDS_PATH', 'info', 0, found.slice(0, 6).join(', '));
+            }
         }
-        if (/\d/.test(displaySld)) add('DIGITS_IN_DOMAIN', 'info', W.digits_in_domain, '');
+        // Цифры: у IP они и есть адрес, а у опечатки вроде `paypa1`
+        // именно цифра делает её опечаткой — там уже посчитано брендом.
+        const digitsMeanSomething = /\d/.test(displaySld || sld) && !isIp
+            && !(brand && (brand.kind === 'typosquat' || brand.kind === 'homograph'));
+        if (digitsMeanSomething) add('DIGITS_IN_DOMAIN', 'info', W.digits_in_domain, '');
 
         // Связка слов, повторяющая известную схему обмана.
         const scam = matchScamPattern(path + ' ' + displayHost);
