@@ -224,20 +224,30 @@ async def _lookup_whois(domain: str, budget: float) -> Optional[DomainAgeResult]
         logger.info("WHOIS pool saturated — skipping lookup for %s", domain)
         return None
 
+    loop = asyncio.get_running_loop()
     try:
-        loop = asyncio.get_running_loop()
         future = loop.run_in_executor(_whois_executor, _fetch_whois_sync, domain)
-        try:
-            record = await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
-        except asyncio.TimeoutError:
-            # wait_for не убивает поток — он освободит слот сам.
-            logger.warning("WHOIS timeout for %s", domain)
-            return None
-        except Exception as exc:                       # noqa: BLE001
-            logger.info("WHOIS failed for %s: %s", domain, type(exc).__name__)
-            return None
-    finally:
+    except RuntimeError:
+        # Пул уже закрыт (идёт остановка сервиса) — это не ошибка
+        # разбора, а «уровень недоступен».
         _whois_semaphore.release()
+        logger.info("WHOIS pool is shut down — skipping lookup for %s", domain)
+        return None
+
+    # Слот держит ПОТОК, а не наше ожидание: wait_for поток не убивает.
+    # Освободить слот по таймауту — значит впустить следующий запрос в
+    # очередь к пулу, где все воркеры заняты висящими запросами, и он
+    # прождёт там полный таймаут уже без всякой защиты.
+    future.add_done_callback(lambda _: _whois_semaphore.release())
+
+    try:
+        record = await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("WHOIS timeout for %s", domain)
+        return None
+    except Exception as exc:                           # noqa: BLE001
+        logger.info("WHOIS failed for %s: %s", domain, type(exc).__name__)
+        return None
 
     creation = _earliest_creation_date(getattr(record, "creation_date", None))
     if creation is None:

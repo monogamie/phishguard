@@ -107,6 +107,7 @@ class BatchScanRequest(BaseModel):
 
 class ThreatIntelResult(BaseModel):
     checked: bool = False
+    skipped: bool = False   # не запускали нарочно, а не сбой
     is_threat: bool = False
     threat_types: list[str] = Field(default_factory=list)
     source: Optional[str] = None
@@ -116,6 +117,7 @@ class ThreatIntelResult(BaseModel):
 class ReputationResult(BaseModel):
     """Результат проверки по базе URLhaus (abuse.ch)."""
     checked: bool = False
+    skipped: bool = False
     url_listed: bool = False
     host_listed: bool = False
     threat: Optional[str] = None

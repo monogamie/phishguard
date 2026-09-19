@@ -96,10 +96,13 @@ def _confidence(gsb: ThreatIntelResult, reputation: ReputationResult,
         total += 1
         if extra.checked:
             available += 1
-    if gsb.checked:
-        available += 1
-    if reputation.checked:
-        available += 1
+    # Уровни, выключенные отсутствием ключа, из знаменателя тоже
+    # убираем: это настройка, а не молчащий источник.
+    for core in (gsb, reputation):
+        if getattr(core, "skipped", False):
+            total -= 1
+        elif core.checked:
+            available += 1
     if age.checked:
         available += 1
     if redirects is not None and redirects.resolved:
