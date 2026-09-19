@@ -1653,6 +1653,14 @@ async function scanViaBackend(url) {
         const retry = resp.headers.get('Retry-After') || '60';
         throw new Error('RATE_LIMIT:' + retry);
     }
+    if (resp.status === 422) {
+        // Сервер ОТВЕТИЛ и сказал, что такой адрес проверять не будет.
+        // Это не сбой связи: молча считать локально и подписывать
+        // «сервер недоступен» — значит врать дважды.
+        let detail = '';
+        try { detail = (await resp.json()).detail || ''; } catch {}
+        throw new Error('REJECTED:' + detail);
+    }
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
 
     const data = await resp.json();
@@ -1995,6 +2003,16 @@ async function startScan() {
     } catch (err) {
         wakingTimers.forEach(clearTimeout);
         const message = String(err && err.message || err);
+        if (message.startsWith('REJECTED:')) {
+            showError(message.slice('REJECTED:'.length) ||
+                      (lang === 'ru' ? 'Сервер не принял этот адрес'
+                                     : 'The server rejected this address'));
+            bar.classList.add('hidden');
+            button.disabled = false;
+            button.textContent = T.btn_scan;
+            isScanning = false;
+            return;
+        }
         if (message.startsWith('RATE_LIMIT:')) {
             // Осмысленное сообщение вместо молчаливого перехода в резерв.
             showError(lang === 'ru'
@@ -2417,7 +2435,17 @@ async function mStartScan() {
     try {
         result = await scanViaBackend(normalized);
     } catch (err) {
-        if (String(err && err.message || err).startsWith('RATE_LIMIT:')) {
+        const msg = String(err && err.message || err);
+        if (msg.startsWith('REJECTED:')) {
+            timers.forEach(clearTimeout);
+            if (token !== mScanToken) return;
+            mGo('mScanScreen');
+            mShowError(msg.slice('REJECTED:'.length) ||
+                       (lang === 'ru' ? 'Сервер не принял этот адрес'
+                                      : 'The server rejected this address'));
+            return;
+        }
+        if (msg.startsWith('RATE_LIMIT:')) {
             timers.forEach(clearTimeout);
             if (token !== mScanToken) return;
             mGo('mScanScreen');

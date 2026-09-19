@@ -12,7 +12,7 @@ from typing import Optional
 
 from pydantic import ValidationError
 
-from cache import TTLCache
+from cache import TTLCache, cache_key
 from config import settings
 from models import AiVerdictResult, LexicalFeatures, _AiModelOutput
 
@@ -200,7 +200,7 @@ async def analyze_with_ai(url: str, lexical: LexicalFeatures) -> AiVerdictResult
     if client is None:
         return AiVerdictResult(checked=False, error="Клиент Anthropic недоступен")
 
-    cache_key = f"{settings.AI_MODEL}|{url[:500]}"
+    key = cache_key(settings.AI_MODEL, url)
 
     async def _ask() -> AiVerdictResult:
         import anthropic
@@ -283,7 +283,7 @@ async def analyze_with_ai(url: str, lexical: LexicalFeatures) -> AiVerdictResult
         )
 
     try:
-        return await _cache.single_flight(cache_key, _ask)
+        return await _cache.single_flight(key, _ask)
     except Exception:                                  # noqa: BLE001
         logger.exception("AI stage failed")
         return AiVerdictResult(checked=False, error="Сбой уровня AI")

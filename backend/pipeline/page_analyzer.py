@@ -19,7 +19,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from cache import TTLCache
+from cache import TTLCache, cache_key
 from config import settings
 from http_client import get_client
 from models import PageResult
@@ -347,7 +347,7 @@ async def analyze_page(url: str) -> PageResult:
         )
 
     try:
-        return await _cache.single_flight(url[:500], _fetch)
+        return await _cache.single_flight(cache_key(url), _fetch)
     except Exception:                                  # noqa: BLE001
         logger.exception("Page stage failed")
         return PageResult(checked=False, error="Сбой уровня страницы")

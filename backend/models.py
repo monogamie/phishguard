@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
-from normalize import normalize_authority
+from normalize import normalize_authority, encode_unparseable_userinfo
 
 MAX_URL_LENGTH = 2048
 
@@ -45,18 +45,18 @@ class ScanRequest(BaseModel):
     def normalise_url(cls, v: Any) -> str:
         # 1. Тип. Всё, что не строка, — это 422, а не 500.
         if not isinstance(v, str):
-            raise ValueError("URL must be a string")
+            raise ValueError("Адрес должен быть строкой")
 
         v = v.strip()
         if not v:
-            raise ValueError("URL must not be empty")
+            raise ValueError("Вы не ввели адрес")
         if len(v) > MAX_URL_LENGTH:
-            raise ValueError(f"URL is longer than {MAX_URL_LENGTH} characters")
+            raise ValueError(f"Адрес слишком длинный — больше {MAX_URL_LENGTH} символов")
 
         # 2. Управляющие символы. \r\n в URL — это CRLF-инъекция
         #    в исходящий HTTP-запрос (request splitting).
         if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in v):
-            raise ValueError("URL must not contain control characters")
+            raise ValueError("В адресе есть невидимые управляющие символы — скорее всего, он скопирован с ошибкой")
 
         # 3. Схема. Дописываем https:// только если схемы нет вообще.
         #    Если схема есть, но она не http(s) — отказ.
@@ -67,7 +67,8 @@ class ScanRequest(BaseModel):
             if not lowered.startswith(("http://", "https://")):
                 scheme = v.split(":", 1)[0]
                 raise ValueError(
-                    f"Unsupported URL scheme {scheme!r}: only http and https are allowed"
+                    f"Поддерживаются только адреса http:// и https://, "
+                    f"а здесь «{scheme[:20]}»"
                 )
         else:
             v = "https://" + v
@@ -77,6 +78,7 @@ class ScanRequest(BaseModel):
         #    (и проверка SSRF, и скачивание страницы) шли туда же, куда
         #    уйдёт жертва, а не на домен, спрятанный справа от слеша.
         v = normalize_authority(v)
+        v = encode_unparseable_userinfo(v)
 
         # 5. Хост обязан существовать и быть разбираемым.
         #    urlsplit ленив: .hostname/.port бросают ValueError только
@@ -86,12 +88,12 @@ class ScanRequest(BaseModel):
             host = parts.hostname
             _ = parts.port          # ValueError, если порт не число
         except ValueError as exc:
-            raise ValueError(f"Malformed URL: {exc}") from exc
+            raise ValueError("Адрес записан неправильно и не разбирается. Проверьте, нет ли лишних символов") from exc
 
         if not host:
-            raise ValueError(f"Cannot extract hostname from: {v!r}")
+            raise ValueError("В адресе не нашлось имени сайта")
         if "." not in host and host != "localhost" and not host.startswith("["):
-            raise ValueError(f"Hostname {host!r} has no TLD")
+            raise ValueError("В адресе нет доменной зоны — после точки должно быть окончание вроде .ru или .com")
 
         return v
 
