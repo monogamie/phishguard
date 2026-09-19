@@ -66,6 +66,11 @@ _BRAND_TEXT: dict[str, str] = {
     "ozon": "ozon", "озон": "ozon",
     "яндекс": "yandex", "yandex": "yandex",
     "telegram": "telegram", "телеграм": "telegram",
+    "вконтакте": "vkontakte", "vkontakte": "vkontakte",
+    "авито": "avito", "avito": "avito",
+    "почта россии": "pochta", "почта-россии": "pochta", "pochta": "pochta",
+    "мвд": "mvd", "мосэнергосбыт": "mosenergo",
+    "втб": "vtb", "райффайзен": "raiffeisen",
     "paypal": "paypal", "microsoft": "microsoft", "apple": "apple",
     "amazon": "amazon", "netflix": "netflix", "binance": "binance",
 }

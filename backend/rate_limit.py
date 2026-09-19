@@ -79,9 +79,10 @@ def client_identifier(request: Request) -> str:
             if chain:
                 index = min(settings.TRUSTED_PROXY_HOPS, len(chain))
                 return chain[-index]
-        real_ip = request.headers.get("x-real-ip")
-        if real_ip:
-            return real_ip.strip()
+        # X-Real-IP НЕ читаем. Его прокси перезаписывает, а вот клиент
+        # может прислать свой — и, не отправив X-Forwarded-For, обойти
+        # лимит той же строкой, от которой мы закрылись выше. Когда
+        # цепочки нет, честнее взять адрес того, кто реально подключился.
     return request.client.host if request.client else "unknown"
 
 

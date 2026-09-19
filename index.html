@@ -1112,6 +1112,32 @@ const BRANDS = {
 const BRAND_OWNED = new Set(Object.values(BRANDS).flat());
 const BRAND_NAMES = new Set(Object.keys(BRANDS));
 
+// Как бренд пишут люди: русские написания и короткие формы.
+// Зеркало BRAND_ALIASES из backend/data/brands.py — расходиться
+// им нельзя, иначе страница и сервер выносят разные вердикты.
+const BRAND_ALIASES = {
+    alfabank: ['alfa','альфа','альфа-банк','альфабанк'],
+    apple: ['icloud','айклауд','эпл'],
+    avito: ['avito','авито'],
+    gazprom: ['gazprom','газпром'],
+    gosuslugi: ['esia','gosuslugi','госуслуга','госуслуги'],
+    mailru: ['mailru','майлру'],
+    microsoft: ['msft','майкрософт'],
+    ozon: ['ozon','озон'],
+    pochta: ['pochta','почта-россии','почтароссии'],
+    raiffeisen: ['raif','райфайзен','райффайзен'],
+    sberbank: ['sber','sberbank','сбер','сбербанк'],
+    telegram: ['telegram','tg','телеграм','телеграмм'],
+    tinkoff: ['tbank','tinkof','т-банк','тинькоф','тинькофф'],
+    vkontakte: ['vk','вк','вконтакте'],
+    vtb: ['vtb','втб'],
+    wildberries: ['wb','wildberries','вайлдберис','вайлдберриз'],
+    yandex: ['yandex','яндекс'],
+};
+const SHORT_ALIAS_MAX_LEN = 5;
+
+
+
 const TRUSTED = new Set([...BRAND_OWNED,
     'wikipedia.org','wikimedia.org','twitter.com','x.com','reddit.com','twitch.tv',
     'discord.com','ok.ru','rutube.ru','pinterest.com','tiktok.com','spotify.com',
@@ -1182,10 +1208,12 @@ const KEYWORDS_RU = ['golos','golosovanie','golosovat','golosuy','vote','voting'
 */
 const SCAM_PATTERNS = [
     { code:'fake_vote',
-      a:['golos','golosovanie','golosovat','golosuy','vote','voting','konkurs',
-         'concurs','reyting','rating','голос','голосование','конкурс'],
-      b:['deti','detskiy','rebenok','malysh','detsad','shkola','grant',
-         'risunok','talant','дети','ребенок','конкурс','голосование'] },
+      a:['golos','golosovani','golosovat','golosuy','vote','voting','konkurs',
+         'concurs','reyting','rating','голос','голосовани','конкурс'],
+      b:['deti','detey','detej','detei','detok','detskiy','detsk','rebenok',
+         'rebenka','rebyonka','rebionka','malysh','malysha','detsad','shkola',
+         'grant','risunok','talant','kid','kids','child','children','baby',
+         'дети','детей','деток','ребенок','ребенка','ребёнка','малыш','малыша'] },
     { code:'fake_payout',
       a:['vyplata','vyplaty','vozvrat','kompensaciya','posobie','subsidiya',
          'refund','payout','выплата','возврат'],
@@ -1196,19 +1224,37 @@ const SCAM_PATTERNS = [
          'bonus','приз','подарок'],
       b:['poluchit','zabrat','aktivirovat','claim','win','winner','akciya',
          'promo','получить','забрать'] },
+    { code:'fake_delivery',
+      a:['dostavka','posylka','posylki','otpravlenie','trek','tracking',
+         'parcel','delivery','kurier','kuryer','доставка','посылка',
+         'отправление','трек'],
+      b:['oplatit','oplata','doplata','doplatit','tamozhnya','hranenie',
+         'pay','customs','оплатить','доплатить','таможня','хранение'] },
+    { code:'fake_fine',
+      a:['shtraf','shtrafy','gibdd','gai','narushenie','postanovlenie',
+         'fine','penalty','штраф','штрафы','гибдд','нарушение'],
+      b:['oplatit','oplata','skidka','proverit','pogasit','sudebnyy',
+         'pristav','pay','оплатить','скидка','проверить','погасить'] },
 ];
 
 const SCAM_LABELS = {
     ru:{ fake_vote:'поддельное голосование или конкурс',
          fake_payout:'обещание выплаты или возврата денег',
-         fake_prize:'обещание приза или подарка' },
+         fake_prize:'обещание приза или подарка',
+         fake_delivery:'поддельная доставка или посылка',
+         fake_fine:'поддельный штраф или постановление' },
     en:{ fake_vote:'fake voting or contest',
          fake_payout:'promised payout or refund',
+         fake_delivery:'fake delivery or parcel',
+         fake_fine:'fake fine or penalty notice',
          fake_prize:'promised prize or gift' },
 };
 
 function buildGroupRe(words) {
-    return new RegExp('(?<![a-z])(' +
+    // Граница слева закрывает и кириллицу тоже: иначе «конкурс»
+    // находится внутри «всероссийскийконкурс». Справа границы нет
+    // нарочно — так одним написанием ловятся падежи.
+    return new RegExp('(?<![0-9a-zA-Z\\u0400-\\u04ff])(' +
         words.slice().sort((x,y)=>y.length-x.length).join('|') + ')', 'i');
 }
 const SCAM_RE = SCAM_PATTERNS.map(p => ({
@@ -1303,6 +1349,20 @@ function findBrand(host, sld, registered, subs, displayHost, displaySld) {
     const cheapZone = SUSPICIOUS_TLDS.has(zone) || ABUSED_TLDS.has(zone);
     if (!cheapZone && BRAND_NAMES.has((sld || '').toLowerCase())) return null;
 
+    // Русские написания и короткие формы. Длинные ищем подстрокой,
+    // короткие — только целой частью между дефисами, иначе
+    // «озонотерапия» снова станет Ozon.
+    const humanName = (displaySld || sld || '').toLowerCase();
+    const nameParts = new Set(humanName.split(/[-_.]/));
+    for (const [brand, aliases] of Object.entries(BRAND_ALIASES)) {
+        for (const alias of aliases) {
+            const hit = alias.length <= SHORT_ALIAS_MAX_LEN
+                ? nameParts.has(alias)
+                : humanName.includes(alias);
+            if (hit) return { brand, kind:'impersonation', evidence:alias };
+        }
+    }
+
     // Для поиска гомоглифов сравниваем то, что ВИДИТ пользователь
     // (раскодированный Unicode), а не ASCII-форму из new URL().
     const canonSld    = canonical(displaySld || sld);
@@ -1362,7 +1422,24 @@ function engineLocal(rawInput) {
 
     // IP вместо домена (v4 с проверкой октетов, и v6 в скобках).
     const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    const isIp = (ipv4 && ipv4.slice(1).every(o => Number(o) <= 255)) || host.startsWith('[');
+    // Браузер понимает IP не только точками: `3232235777`, `0xC0A80001`
+    // и `0177.0.0.1` ведут на 192.168.0.1. Мошенники так и прячут адрес.
+    const isNumericHost = (() => {
+        if (/^0[xX][0-9a-fA-F]+$/.test(host)) return true;
+        if (/^\d+$/.test(host)) return Number(host) <= 0xFFFFFFFF;
+        const parts = host.split('.');
+        if (parts.length < 2 || parts.length > 4 || parts.some(p => !p)) return false;
+        const vals = parts.map(p => {
+            if (/^0[xX][0-9a-fA-F]+$/.test(p)) return parseInt(p, 16);
+            if (/^0[0-7]+$/.test(p))          return parseInt(p, 8);
+            if (/^\d+$/.test(p))              return parseInt(p, 10);
+            return NaN;
+        });
+        if (vals.some(Number.isNaN)) return false;
+        if (vals.slice(0, -1).some(v => v > 255)) return false;
+        return vals[vals.length - 1] < Math.pow(2, 8 * (5 - parts.length));
+    })();
+    const isIp = isNumericHost || host.startsWith('[');
     if (isIp) add('IP_IN_URL', 'danger', W.ip_in_url, host);
 
     // Имперсонация бренда.

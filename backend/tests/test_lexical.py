@@ -326,3 +326,84 @@ def test_multi_tenant_platforms_get_no_trust_ceiling(url):
     f = la.analyze(url)
     assert f.is_trusted_domain is False
     assert f.brand_match is None
+
+
+# ── Как бренд пишут люди, и как пишут адреса мошенники ───────────
+
+@pytest.mark.parametrize("url,brand", [
+    ("https://сбербанк-онлайн.рф/", "sberbank"),
+    ("https://вход-сбербанк.рф/", "sberbank"),
+    ("https://госуслуги-выплата.рф/", "gosuslugi"),
+    ("https://тинькофф-вход.ru/", "tinkoff"),
+    ("https://sber-vhod.top/", "sberbank"),      # короткая форма
+    ("https://vk-login.top/", "vkontakte"),
+    ("https://ozon-bonus.top/", "ozon"),
+    ("https://vtb-online.top/", "vtb"),
+    ("https://avito-dostavka.top/", "avito"),
+])
+def test_brand_aliases_are_recognised(url, brand):
+    """Мошенник пишет так, как прочитает жертва. Словарь знал только
+    канонические латинские имена, и `сбербанк-онлайн.рф` проходил мимо."""
+    match = la.analyze(url).brand_match
+    assert match is not None, f"не опознан: {url}"
+    assert match.brand == brand
+
+
+@pytest.mark.parametrize("url", [
+    "https://ozone.com/",            # не Ozon
+    "https://ozonoterapiya.ru/",     # и не он же
+    "https://sberegenie.ru/",        # не Сбербанк
+    "https://vkusno-i-tochka.ru/",   # не ВКонтакте
+    "https://vtoroy-dom.ru/",        # не ВТБ
+    "https://sberbank.ru/",          # сам Сбербанк
+    "https://vk.com/id1",
+    "https://ozon.ru/",
+    "https://tele2.ru/",
+])
+def test_brand_aliases_do_not_misfire(url):
+    """Короткие формы (`сбер`, `vk`, `vtb`) опасны как подстрока —
+    поэтому сверяются только с целой частью имени между дефисами."""
+    assert la.analyze(url).brand_match is None, f"ложное срабатывание: {url}"
+
+
+@pytest.mark.parametrize("url,pattern", [
+    ("https://dostavka-posylka.top/oplatit", "fake_delivery"),
+    ("https://pochta-dostavka.top/doplatit", "fake_delivery"),
+    ("https://shtraf-gibdd.top/oplatit", "fake_fine"),
+    ("https://gibdd-shtrafy.online/oplata", "fake_fine"),
+])
+def test_delivery_and_fine_schemes_are_caught(url, pattern):
+    """Две массовые схемы, которых в словаре не было вообще."""
+    assert la.analyze(url).scam_pattern == pattern
+
+
+@pytest.mark.parametrize("url", [
+    "https://pochta.ru/tracking",
+    "https://gibdd.ru/check/fines",
+    "https://ozon.ru/dostavka",
+    "https://cdek.ru/track",
+])
+def test_honest_delivery_and_fine_sites_are_clean(url):
+    assert la.analyze(url).scam_pattern is None, url
+
+
+@pytest.mark.parametrize("url", [
+    "http://3232235777/",        # десятичная запись 192.168.0.1
+    "http://0xC0A80001/",        # шестнадцатеричная
+    "http://0177.0.0.1/",        # восьмеричная
+    "http://2130706433/login",   # 127.0.0.1
+])
+def test_ip_in_unusual_notations_is_still_an_ip(url):
+    """Браузер понимает все три записи, и мошенники ими пользуются
+    ровно затем, чтобы адрес не выглядел адресом."""
+    assert la.analyze(url).has_ip_address is True, url
+
+
+@pytest.mark.parametrize("url", [
+    "http://999.999.999.999/",
+    "https://example.com/",
+    "https://2gis.ru/",
+    "https://shop24.ru/",
+])
+def test_things_that_only_look_numeric_are_not_ips(url):
+    assert la.analyze(url).has_ip_address is False, url
