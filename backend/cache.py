@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import asyncio
 import logging
 import time
@@ -12,6 +14,18 @@ from typing import Any, Awaitable, Callable, Generic, Optional, TypeVar
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+def cache_key(*parts: str) -> str:
+    """
+    Короткий ключ кеша по ПОЛНОМУ содержимому.
+
+    Раньше адреса резались до 500 символов, а допускаем мы 2048 — два
+    длинных адреса с одинаковым началом получали общую запись, и второй
+    видел улики первого. Хеш такого не допускает и короче любого адреса.
+    """
+    digest = hashlib.sha256("\x00".join(parts).encode("utf-8", "replace"))
+    return digest.hexdigest()
 
 
 class TTLCache(Generic[T]):

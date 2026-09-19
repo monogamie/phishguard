@@ -4,9 +4,12 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 import idna
+
+from urllib.parse import quote, urlsplit
 
 # ── 1. Таблица гомоглифов ────────────────────────────────────────
 # Отображаем «обманчиво похожие» символы в латиницу.
@@ -67,6 +70,20 @@ _SPECIAL_SCHEMES = ("http://", "https://")
 _AUTHORITY_END = "/?#" + chr(92)
 
 
+# Двойники ТОЧКИ, которые браузер приводит к обычной при разборе имени
+# (это часть правил IDNA). Проверено настоящим браузером:
+# `google.com。evil.ru` он читает как `google.com.evil.ru`.
+#
+# Полноширинные слеш, собака и двоеточие сюда НЕ входят — проверено там
+# же: слеш браузер разделителем не считает, а на собаке спотыкается.
+# Соблазн дописать их велик, но тогда мы разойдёмся с браузером в
+# другую сторону, а это ровно то, что мы весь день чиним.
+_LOOKALIKE_DELIMITERS = {
+    "\u3002": ".", "\uff0e": ".", "\uff61": ".",
+}
+_LOOKALIKE_RE = re.compile("[" + "".join(_LOOKALIKE_DELIMITERS) + "]")
+
+
 def normalize_authority(url: str) -> str:
     """
     Приводит адрес к тому виду, как его понимает браузер.
@@ -78,6 +95,8 @@ def normalize_authority(url: str) -> str:
 
     Трогаем только адресную часть: в пути обратный слеш безобиден.
     """
+    url = _LOOKALIKE_RE.sub(lambda m: _LOOKALIKE_DELIMITERS[m.group()], url)
+
     lowered = url[:8].lower()
     scheme_len = next((len(s) for s in _SPECIAL_SCHEMES if lowered.startswith(s)), 0)
     if not scheme_len:
@@ -90,6 +109,40 @@ def normalize_authority(url: str) -> str:
     # Разделитель оказался обратным слешем — заменяем его на прямой,
     # и адресная часть кончается там же, где кончилась бы у браузера.
     return url[:scheme_len] + rest[:cut] + "/" + rest[cut + 1:]
+
+
+def encode_unparseable_userinfo(url: str) -> str:
+    """
+    Кодирует логин в адресе, если из-за него `urlsplit` отказывается
+    разбирать адрес целиком.
+
+    Python бракует адресную часть, если NFKC-нормализация вносит в неё
+    новые служебные символы (его защита от подмены хоста). Браузер так
+    не делает: `https://sberbank.ru／@evil.top/` он спокойно открывает
+    на `evil.top`, считая всё до «собаки» логином.
+
+    Пока мы просто отказывались проверять такой адрес, мошенник получал
+    способ вообще не попасть под проверку. Логин ПРОЦЕНТ-кодируем, а не
+    выбрасываем: разборщик тогда доволен, хост определяется правильно,
+    и «собака в адресе» остаётся видна как признак.
+    """
+    lowered = url[:8].lower()
+    scheme_len = next((len(s) for s in _SPECIAL_SCHEMES if lowered.startswith(s)), 0)
+    if not scheme_len:
+        return url
+    rest = url[scheme_len:]
+    cut = next((i for i, ch in enumerate(rest) if ch in "/?#"), len(rest))
+    authority, tail = rest[:cut], rest[cut:]
+    if "@" not in authority:
+        return url
+    try:
+        urlsplit(url).hostname
+        return url
+    except ValueError:
+        pass
+    userinfo, _, host_part = authority.rpartition("@")
+    safe_userinfo = quote(userinfo, safe="")
+    return url[:scheme_len] + safe_userinfo + "@" + host_part + tail
 
 
 def to_ascii_host(host: str) -> str:
@@ -263,6 +316,7 @@ __all__ = [
     "decode_punycode",
     "to_ascii_host",
     "normalize_authority",
+    "encode_unparseable_userinfo",
     "fold_homoglyphs",
     "fold_leet",
     "fold_sequences",

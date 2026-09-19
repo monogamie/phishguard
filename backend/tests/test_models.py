@@ -57,3 +57,49 @@ def test_existing_scheme_preserved():
 
 def test_whitespace_trimmed():
     assert ScanRequest(url="  google.com  ").url == "https://google.com"
+
+
+# ── Разбирать адрес так же, как его читает браузер ───────────────
+# Каждая строчка ниже сверена с настоящим Chromium: как он определит
+# хост, так должны определить и мы. Иначе жертва уходит на один сайт,
+# а мы проверяем другой.
+
+@pytest.mark.parametrize("url,host", [
+    # Полноширинный слеш: браузер НЕ считает его разделителем, он
+    # остаётся в логине, и хост — то, что справа от «собаки».
+    ("https://sberbank.ru／@evil-phish-zzz.top/", "evil-phish-zzz.top"),
+    # Точки CJK браузер приводит к обычной (правила IDNA).
+    ("https://google.com。evil.ru/", "google.com.evil.ru"),
+    # Обратный слеш — разделитель.
+    ("https://evil.top\\@sberbank.ru/", "evil.top"),
+    # %2F в логине границу не двигает.
+    ("https://sberbank.ru%2Flogin@evil.top/x", "evil.top"),
+    ("https://example.com/", "example.com"),
+])
+def test_host_matches_what_the_browser_would_open(url, host):
+    from urllib.parse import urlsplit
+    assert urlsplit(ScanRequest(url=url).url).hostname == host
+
+
+def test_at_symbol_survives_userinfo_encoding():
+    """Логин с полноширинным слешем кодируем, а не выбрасываем: иначе
+    теряется признак «собака в адресе», а это приём мошенника."""
+    from pipeline.lexical_analyzer import lexical_analyzer
+    normalised = ScanRequest(url="https://sberbank.ru／@evil.top/").url
+    assert lexical_analyzer.analyze(normalised).has_at_symbol is True
+
+
+@pytest.mark.parametrize("url,word", [
+    ("https://example.com:abc/", "разбирается"),
+    ("не ссылка", "зон"),
+    ("javascript:alert(1)", "http"),
+    ("", "не ввели"),
+])
+def test_rejection_messages_are_readable(url, word):
+    """Человек должен понять, что не так. Раньше отдавали питоновские
+    потроха: «Port could not be cast to integer value as 'abc'»."""
+    with pytest.raises(Exception) as caught:
+        ScanRequest(url=url)
+    text = str(caught.value)
+    assert word in text, text[:200]
+    assert "Value error" not in text.replace("Value error, ", "")
