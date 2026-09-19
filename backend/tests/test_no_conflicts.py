@@ -141,20 +141,45 @@ def test_one_fact_one_signal_from_url(name, url, expected):
 
 # ── Честные сайты не имеют права стать подозрительными ───────────
 
+# Сайты компаний: у них бывает своя страница входа, в том числе с
+# кнопкой «войти через ВК» — это нормальный сайт, а не улика.
 HONEST_SITES = [
     "https://habr.com/ru/articles/123456/",
     "https://nalog.ru/rn77/service/",
     "https://www.sberbank.ru/person/credits",
     "https://мвд.рф/",
+    "https://www.мвд.рф/",
     "https://xn--d1abbgf6aiiy.xn--p1ai/",          # президент.рф
+    "https://société.fr/",
+    "https://github.blog/",
     "https://ozon.ru/product/telefon-12345/",
     "https://moy-internet-magazin.ru/catalog/",
     "https://some-company.ru/account/login",        # обычная страница входа
     "https://forum-lyubiteley-rybalki.ru/vhod",
     "https://shop24.ru/",
+    "https://cabinet.tele2.ru/security/password/recovery",
+]
+
+# Файл или документ на чужой площадке. Формы входа там взяться неоткуда,
+# и кормить их ею — проверять выдумку, а не жизнь. Зато сама площадка
+# послаблений не даёт, и это проверяется отдельно.
+HONEST_PLATFORM_FILES = [
     "https://storage.googleapis.com/bucket/report.pdf",
     "https://my-team.sharepoint.com/sites/docs",
+    "https://s3.amazonaws.com/bucket/presentation.pdf",
+    "https://telegra.ph/Kak-my-delali-proekt-01-01",
 ]
+
+
+@pytest.mark.parametrize("url", HONEST_PLATFORM_FILES)
+def test_honest_files_on_platforms_stay_below_suspicion(url):
+    """Документ, выложенный на площадке, сам по себе ничем не плох."""
+    result = _score(url=url,
+                    page=PageResult(checked=True, status_code=200,
+                                    form_count=0, bytes_read=8000))
+    assert result.risk_score < settings.SUSPICIOUS_MIN, (
+        f"{url}: {result.risk_score}, "
+        f"{[(s.code, s.weight) for s in result.signals if s.weight]}")
 
 
 @pytest.mark.parametrize("url", HONEST_SITES)
@@ -327,3 +352,68 @@ def test_keywords_in_the_domain_name_still_count(url):
     служебным. Это разные вещи, и оговорка выше сюда не тянется."""
     result = _score(url=url, age=DomainAgeResult(checked=True, age_days=20))
     assert result.verdict == Verdict.PHISHING, f"{url}: {result.risk_score}"
+
+
+# ── Площадки и сокращатели ───────────────────────────────────────
+
+PHISHING_PAGE = PageResult(
+    checked=True, status_code=200, has_password_field=True,
+    messenger_login=["telegram"], brands_in_text=["sberbank"],
+    hidden_input_count=5, form_count=2, bytes_read=9000)
+
+
+@pytest.mark.parametrize("url", [
+    "https://telegra.ph/Sberbank-vhod-01-01",
+    "https://sberbank.github.io/",
+    "https://medium.com/@x/sber",
+    "https://t.me/sberbank_vhod",
+    "https://docs.google.com/document/d/x/edit",
+])
+def test_phishing_on_a_shared_platform_is_not_excused(url):
+    """
+    На площадке страницу публикует кто угодно, но домен принадлежит
+    приличной компании — и потолок доверия обнулял ВСЕ улики страницы,
+    а уровень страницы вообще не запускался. Полный набор признаков
+    обмана давал 10 баллов и «БЕЗОПАСНО».
+    """
+    result = _score(url=url, page=PHISHING_PAGE,
+                    age=DomainAgeResult(checked=True, age_days=2000))
+    assert result.verdict == Verdict.PHISHING, f"{url}: {result.risk_score}"
+
+
+@pytest.mark.parametrize("url", [
+    "https://telegra.ph/Moy-blog-pro-kota-01-01",
+    "https://docs.google.com/document/d/x/edit",
+    "https://t.me/durov",
+    "https://google.com/search?q=pogoda",
+])
+def test_honest_content_on_the_same_platforms_stays_clean(url):
+    """Оговорка выше не должна записать во враги весь Telegram."""
+    result = _score(url=url,
+                    page=PageResult(checked=True, status_code=200,
+                                    form_count=0, bytes_read=5000),
+                    age=DomainAgeResult(checked=True, age_days=2000))
+    assert result.verdict == Verdict.SAFE, f"{url}: {result.risk_score}"
+
+
+@pytest.mark.parametrize("url", [
+    "https://bit.ly/3xK9pQ",
+    "https://vk.cc/abc",
+    "https://goo.gl/x",
+])
+def test_an_unopened_short_link_is_never_safe(url):
+    """
+    «Развернуть не удалось» значит, что мы не знаем ничего. Стоял
+    только потолок в 45, и он не срабатывал никогда: балл и так был 15,
+    и человек видел зелёное — а у `vk.cc` рядом ещё и «известный домен
+    с проверенной репутацией». Нужен пол, а не потолок.
+    """
+    redirects = RedirectInfo(final_url=url, chain=[url],
+                             was_shortener=True, resolved=False)
+    result = _score(url=url, redirects=redirects,
+                    age=DomainAgeResult(checked=False, error="неизвестно"),
+                    page=PageResult(checked=False, error="не развёрнута"))
+    assert result.verdict != Verdict.SAFE, f"{url}: {result.risk_score}"
+    assert not any(s.code == "TRUSTED_DOMAIN" for s in result.signals), (
+        "значок «известный домен» рядом с «куда ведёт — неизвестно»"
+    )

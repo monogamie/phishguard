@@ -71,7 +71,27 @@ BRAND_OWNED_DOMAINS: frozenset[str] = frozenset(
 # Поддомены остальных изолирует приватная часть PSL — см.
 # _extract_trust в pipeline/lexical_analyzer.py.
 MULTI_TENANT_DOMAINS: frozenset[str] = frozenset({
-    "amazonaws.com", "googleapis.com", "sharepoint.com", "wordpress.com",
+    # файловые хранилища и корпоративные площадки
+    "amazonaws.com", "googleapis.com", "sharepoint.com",
+    # бесплатные публикации и хостинг страниц
+    "wordpress.com", "blogspot.com", "medium.com", "notion.so",
+    "telegra.ph", "teletype.in", "github.io", "gitlab.io",
+    "pages.dev", "workers.dev", "web.app", "firebaseapp.com",
+    "vercel.app", "netlify.app", "glitch.me", "replit.dev",
+    "weebly.com", "wixsite.com", "ucoz.ru", "narod.ru",
+    # мессенджеры и соцсети: содержимое пишут пользователи,
+    # и `t.me/что-угодно` — ровно вектор из истории проекта
+    "t.me", "telesco.pe",
+})
+
+# Площадки, которые живут на поддомене доверенного домена. Сам
+# `google.com` послабление заслуживает, а вот `docs.google.com`, где
+# документ публикует кто угодно, — нет. Сверяется с ПОЛНЫМ хостом.
+MULTI_TENANT_HOSTS: frozenset[str] = frozenset({
+    "docs.google.com", "sites.google.com", "drive.google.com",
+    "script.google.com", "firebasestorage.googleapis.com",
+    "storage.googleapis.com", "s3.amazonaws.com",
+    "onedrive.live.com", "1drv.ms",
 })
 
 # ── Доверенные регистрируемые домены (eTLD+1) ────────────────────
@@ -103,5 +123,6 @@ __all__ = [
     "BRAND_OWNED_DOMAINS",
     "TRUSTED_DOMAINS",
     "MULTI_TENANT_DOMAINS",
+    "MULTI_TENANT_HOSTS",
     "MIN_SUBSTRING_BRAND_LEN",
 ]

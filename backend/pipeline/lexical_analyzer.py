@@ -15,6 +15,8 @@ import tldextract
 
 from data.brands import (
     BRAND_DOMAINS,
+    MULTI_TENANT_DOMAINS,
+    MULTI_TENANT_HOSTS,
     MIN_SUBSTRING_BRAND_LEN,
     TRUSTED_DOMAINS,
 )
@@ -366,6 +368,8 @@ class LexicalAnalyzer:
             abused_tld            = self._is_abused_tld(suffix),
             is_trusted_domain     = is_trusted,
             trust_domain          = trust_domain,
+            on_shared_platform    = (registered_domain in MULTI_TENANT_DOMAINS
+                                     or host in MULTI_TENANT_HOSTS),
             brand_match           = brand,
         )
 
@@ -523,10 +527,24 @@ class LexicalAnalyzer:
         if not sld:
             return None
 
-        # Домен принадлежит бренду — это не имперсонация.
-        for domains in BRAND_DOMAINS.values():
-            if registered_domain in domains:
-                return None
+        # Домен принадлежит бренду — сам домен это не имперсонация.
+        #
+        # Но если это площадка, где публикует кто угодно (`github.io`
+        # принадлежит GitHub, а страницу на нём заводит любой), то
+        # ЧУЖОЕ имя в поддомене проверить всё равно надо: раньше ранний
+        # выход ослеплял все три техники сразу, и `sberbank.github.io`
+        # не опознавался как подделка ни по одной.
+        owned_by_brand = any(registered_domain in domains
+                             for domains in BRAND_DOMAINS.values())
+        if owned_by_brand:
+            if registered_domain in MULTI_TENANT_DOMAINS:
+                for brand in BRAND_DOMAINS:
+                    if brand in subdomains:
+                        return BrandMatch(
+                            brand=brand, kind="impersonation",
+                            evidence=f"поддомен «{brand}» на площадке "
+                                     f"{registered_domain}")
+            return None
 
         folded_host = fold_homoglyphs(decoded_host or host)
         canon_sld = canonical(sld)

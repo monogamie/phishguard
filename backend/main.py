@@ -208,7 +208,10 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
     # исключение и бросает результаты других задач.
     # Доверенные домены не гоняем через дорогие уровни: там уже всё
     # решено потолком доверия, а страница и журналы стоят времени.
-    heavy = not lexical.is_trusted_domain
+    # На площадке, где публикует кто угодно, содержимое смотреть НАДО,
+    # даже если сам домен доверенный: `docs.google.com` и `telegra.ph`
+    # — это чужие страницы, а не страницы Google и Telegram.
+    heavy = lexical.on_shared_platform or not lexical.is_trusted_domain
 
     results = await asyncio.gather(
         check_google_safe_browsing(scanned_url),

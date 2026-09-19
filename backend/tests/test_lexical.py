@@ -300,14 +300,19 @@ def test_founding_scam_is_caught_in_its_real_forms(url):
 
 # ── Регрессия: фишинг на чужой площадке получал «БЕЗОПАСНО» ──────
 
-def test_subdomain_of_hosting_platform_is_not_trusted():
-    """`github.io` доверенный, но заведённый за минуту поддомен на нём
-    доверенным быть не должен: иначе потолок доверия обнулял все улики
-    страницы и фишинг получал «БЕЗОПАСНО» навсегда."""
-    assert la.analyze("https://github.io/").is_trusted_domain is True
+def test_hosting_platform_grants_no_trust_to_anyone():
+    """
+    На площадке страницу заводит кто угодно за минуту, поэтому
+    послаблений она не даёт ни поддоменам, ни себе самой: иначе потолок
+    доверия обнулял все улики страницы и фишинг получал «БЕЗОПАСНО».
+    """
     theirs = la.analyze("https://sber-vhod.github.io/login/")
     assert theirs.trust_domain == "sber-vhod.github.io"
     assert theirs.is_trusted_domain is False
+    assert theirs.on_shared_platform is True
+    assert la.analyze("https://github.io/").is_trusted_domain is False
+    # А обычный домен GitHub послабление получает как и раньше.
+    assert la.analyze("https://github.com/x/y").is_trusted_domain is True
 
 
 @pytest.mark.parametrize("url", [
