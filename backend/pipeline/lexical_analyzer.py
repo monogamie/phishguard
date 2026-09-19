@@ -144,13 +144,23 @@ _KEYWORD_RE = _keyword_pattern(_TRIGGER_KEYWORDS_ALL)
 # Формат: (код, группа_А, группа_Б) — нужно слово из обеих.
 _SCAM_PATTERNS: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
     # Классика угона Telegram/WhatsApp: «проголосуй за ребёнка в конкурсе»
+    # Группы НЕ должны пересекаться: схема — это связка двух разных
+    # мыслей («проголосуй» + «за ребёнка»). Пока «конкурс» и
+    # «голосование» стояли в обеих, схему поднимало одно слово, и
+    # `культура.рф/конкурс` получала 72 балла и «ОПАСНО».
     ("fake_vote",
-     frozenset({"golos", "golosovanie", "golosovat", "golosuy", "vote",
+     frozenset({"golos", "golosovani", "golosovat", "golosuy", "vote",
                 "voting", "konkurs", "concurs", "reyting", "rating",
-                "голос", "голосование", "конкурс"}),
-     frozenset({"deti", "detskiy", "rebenok", "malysh", "detsad",
-                "shkola", "grant", "risunok", "talant", "дети",
-                "ребенок", "конкурс", "голосование"})),
+                "голос", "голосовани", "конкурс"}),
+     # Формы, а не только именительный падеж: в живых адресах пишут
+     # «za-rebenka», «detey», «конкурс-детей». Ровно та ссылка, из-за
+     # которой проект появился, не ловилась именно поэтому.
+     frozenset({"deti", "detey", "detej", "detei", "detok", "detskiy",
+                "detsk", "rebenok", "rebenka", "rebyonka", "rebionka",
+                "malysh", "malysha", "detsad", "shkola", "grant",
+                "risunok", "talant", "kid", "kids", "child", "children",
+                "baby", "дети", "детей", "деток", "ребенок", "ребенка",
+                "ребёнка", "малыш", "малыша"})),
     # «Вам положена выплата / возврат налога / компенсация»
     ("fake_payout",
      frozenset({"vyplata", "vyplaty", "vozvrat", "kompensaciya",
@@ -175,8 +185,17 @@ SCAM_PATTERN_LABELS = {
 
 
 def _group_pattern(words: frozenset[str]) -> re.Pattern[str]:
+    """
+    Слово должно НАЧИНАТЬСЯ на границе, но может продолжаться: так
+    ловятся падежи (`konkursa`, `голосования`) одним написанием.
+
+    Граница слева закрывает и кириллицу тоже. Пока там стояло только
+    `[a-z]`, слово «конкурс» находилось внутри «всероссийскийконкурс»,
+    и схему поднимал любой сайт со словом в середине.
+    """
     alternation = "|".join(sorted(map(re.escape, words), key=len, reverse=True))
-    return re.compile(rf"(?<![a-z])({alternation})", re.IGNORECASE)
+    return re.compile(rf"(?<![0-9a-zA-Z\u0400-\u04ff])({alternation})",
+                      re.IGNORECASE)
 
 
 # Компилируем группы один раз при импорте.

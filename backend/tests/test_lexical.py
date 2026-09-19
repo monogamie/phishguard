@@ -258,11 +258,44 @@ def test_international_domains_are_not_suspicious(url):
 
 
 def test_russian_keywords_found_in_punycode_domain():
-    """В `xn--`-форме русских слов не видно, а жертва видит именно их."""
-    # голосование-конкурс.рф
-    f = la.analyze("https://xn----7sbfdmrqacwedbah8afm0b.xn--p1ai/")
+    """В `xn--`-форме русских слов не видно, а жертва видит именно их.
+
+    Схему берём настоящую — «голосование за ребёнка»: два слова из
+    РАЗНЫХ групп. Пара «голосование + конкурс» схемой не считается,
+    это одна и та же мысль дважды (см. test_scam_pattern_needs_two_...).
+    """
+    # голосование-за-ребенка.рф
+    human = "голосование-за-ребенка.рф"
+    puny = ".".join(l.encode("idna").decode() if any(ord(c) > 127 for c in l) else l
+                    for l in human.split("."))
+    f = la.analyze(f"https://{puny}/")
     assert "голосование" in f.trigger_keywords
     assert f.scam_pattern == "fake_vote"
+
+
+def test_scam_pattern_needs_two_different_ideas():
+    """
+    Схема — это связка «проголосуй» + «за ребёнка». Пока «конкурс» и
+    «голосование» стояли в обеих группах, схему поднимало одно слово,
+    и `культура.рф/конкурс` получала 72 балла и «ОПАСНО».
+    """
+    assert la.analyze("https://культура.рф/конкурс").scam_pattern is None
+    assert la.analyze("https://x.ru/konkurs-programmistov").scam_pattern is None
+    # Слово внутри другого слова тоже не схема: граница слева должна
+    # закрывать кириллицу, а не только латиницу.
+    assert la.analyze("https://всероссийскийконкурс.рф/").scam_pattern is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://golosovanie-za-rebenka.ru/",      # падежи, а не именительный
+    "https://konkurs-detey-2026.top/golosovat",
+    "https://x.top/golosuy-za-malysha",
+    "https://голосование-за-ребенка.рф/",
+])
+def test_founding_scam_is_caught_in_its_real_forms(url):
+    """Живые адреса пишут «za-rebenka» и «detey», а словарь знал только
+    именительный падеж. Это ровно та схема, ради которой проект и был."""
+    assert la.analyze(url).scam_pattern == "fake_vote", url
 
 
 # ── Регрессия: фишинг на чужой площадке получал «БЕЗОПАСНО» ──────
