@@ -1,5 +1,6 @@
 """Тесты уровней 2b (сертификат), 2c (журналы CT) и 5 (страница)."""
 import ssl
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -421,3 +422,22 @@ async def test_page_redirect_to_blocked_address_is_not_followed(monkeypatch):
     assert len(checked) == 2, "цель редиректа обязана проверяться тоже"
     assert requested == ["https://phish.top/start"], \
         "к внутреннему адресу запроса быть не должно"
+
+
+def test_rdap_404_for_an_unserved_zone_is_not_a_missing_domain():
+    """
+    `rdap.org` отвечает 404 и на «домена нет», и на «эту зону я не
+    обслуживаю». Для `.рф` верно второе, а сервис заявлял пользователю,
+    что домен МВД не зарегистрирован — то есть врал про проверяемый факт.
+    """
+    import re
+    source = (Path(__file__).resolve().parents[1]
+              / "pipeline" / "domain_age.py").read_text(encoding="utf-8")
+    branch = source[source.index("if resp.status_code == 404:"):]
+    branch = branch[:branch.index("if resp.status_code != 200:")]
+    assert "no rdap service" in branch.lower(), (
+        "ветка 404 снова считает любой 404 доказательством, что домена нет"
+    )
+    assert re.search(r"return None", branch), (
+        "при неизвестной зоне надо возвращать None, чтобы отработал WHOIS"
+    )

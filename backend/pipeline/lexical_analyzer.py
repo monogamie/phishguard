@@ -22,6 +22,7 @@ from models import BrandMatch, LexicalFeatures
 from normalize import (
     canonical,
     decode_punycode,
+    normalize_authority,
     to_ascii_host,
     fold_homoglyphs,
     has_non_ascii,
@@ -143,13 +144,23 @@ _KEYWORD_RE = _keyword_pattern(_TRIGGER_KEYWORDS_ALL)
 # Формат: (код, группа_А, группа_Б) — нужно слово из обеих.
 _SCAM_PATTERNS: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
     # Классика угона Telegram/WhatsApp: «проголосуй за ребёнка в конкурсе»
+    # Группы НЕ должны пересекаться: схема — это связка двух разных
+    # мыслей («проголосуй» + «за ребёнка»). Пока «конкурс» и
+    # «голосование» стояли в обеих, схему поднимало одно слово, и
+    # `культура.рф/конкурс` получала 72 балла и «ОПАСНО».
     ("fake_vote",
-     frozenset({"golos", "golosovanie", "golosovat", "golosuy", "vote",
+     frozenset({"golos", "golosovani", "golosovat", "golosuy", "vote",
                 "voting", "konkurs", "concurs", "reyting", "rating",
-                "голос", "голосование", "конкурс"}),
-     frozenset({"deti", "detskiy", "rebenok", "malysh", "detsad",
-                "shkola", "grant", "risunok", "talant", "дети",
-                "ребенок", "конкурс", "голосование"})),
+                "голос", "голосовани", "конкурс"}),
+     # Формы, а не только именительный падеж: в живых адресах пишут
+     # «za-rebenka», «detey», «конкурс-детей». Ровно та ссылка, из-за
+     # которой проект появился, не ловилась именно поэтому.
+     frozenset({"deti", "detey", "detej", "detei", "detok", "detskiy",
+                "detsk", "rebenok", "rebenka", "rebyonka", "rebionka",
+                "malysh", "malysha", "detsad", "shkola", "grant",
+                "risunok", "talant", "kid", "kids", "child", "children",
+                "baby", "дети", "детей", "деток", "ребенок", "ребенка",
+                "ребёнка", "малыш", "малыша"})),
     # «Вам положена выплата / возврат налога / компенсация»
     ("fake_payout",
      frozenset({"vyplata", "vyplaty", "vozvrat", "kompensaciya",
@@ -174,8 +185,17 @@ SCAM_PATTERN_LABELS = {
 
 
 def _group_pattern(words: frozenset[str]) -> re.Pattern[str]:
+    """
+    Слово должно НАЧИНАТЬСЯ на границе, но может продолжаться: так
+    ловятся падежи (`konkursa`, `голосования`) одним написанием.
+
+    Граница слева закрывает и кириллицу тоже. Пока там стояло только
+    `[a-z]`, слово «конкурс» находилось внутри «всероссийскийконкурс»,
+    и схему поднимал любой сайт со словом в середине.
+    """
     alternation = "|".join(sorted(map(re.escape, words), key=len, reverse=True))
-    return re.compile(rf"(?<![a-z])({alternation})", re.IGNORECASE)
+    return re.compile(rf"(?<![0-9a-zA-Z\u0400-\u04ff])({alternation})",
+                      re.IGNORECASE)
 
 
 # Компилируем группы один раз при импорте.
@@ -216,20 +236,33 @@ class LexicalAnalyzer:
         """
         raw = url or ""
 
+        # Обратный слеш браузер считает разделителем, а urlsplit — нет.
+        # Без этого мы разбирали бы не тот домен, куда уйдёт жертва.
+        raw = normalize_authority(raw)
+
         # ПОРЯДОК ВАЖЕН: %XX ищем ДО unquote, иначе искать уже нечего.
         raw_netloc = self._safe_netloc(raw)
-        has_encoded_host = bool(_PERCENT_ENCODED_RE.search(raw_netloc.split("@")[-1]))
+        raw_userinfo, _, raw_host_part = raw_netloc.rpartition("@")
+        has_encoded_host = bool(_PERCENT_ENCODED_RE.search(raw_host_part))
+        # Кодирование в ЛОГИНЕ — отдельный приём: `%2F` раскодируется в
+        # `/`, граница между логином и хостом уезжает, и адрес
+        # `bank.ru%2Flogin@злой.сайт` выглядит как безобидный bank.ru.
+        has_encoded_userinfo = bool(_PERCENT_ENCODED_RE.search(raw_userinfo))
+
+        # Разбираем СЫРОЙ адрес, а не раскодированный: unquote до
+        # urlsplit ломает структуру и подменяет анализируемый домен.
+        # Раскодируем только путь и параметры — там оно безопасно и
+        # нужно, чтобы найти спрятанные слова.
+        try:
+            parsed = urlsplit(raw)
+        except ValueError:
+            logger.warning("urlsplit failed for %r", raw[:120])
+            return LexicalFeatures(url_length=len(raw))
 
         try:
             decoded_url = unquote(raw)
         except Exception:
             decoded_url = raw
-
-        try:
-            parsed = urlsplit(decoded_url)
-        except ValueError:
-            logger.warning("urlsplit failed for %r", raw[:120])
-            return LexicalFeatures(url_length=len(raw))
 
         scheme = (parsed.scheme or "https").lower()
 
@@ -253,7 +286,11 @@ class LexicalAnalyzer:
         except ValueError:
             netloc = raw_netloc
 
-        path_and_query = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        raw_path_and_query = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        try:
+            path_and_query = unquote(raw_path_and_query)
+        except Exception:                              # noqa: BLE001
+            path_and_query = raw_path_and_query
 
         ext = _extract(host if host else decoded_url)
         sld = ext.domain.lower()
@@ -284,7 +321,7 @@ class LexicalAnalyzer:
         keywords = self._find_keywords(path_and_query, decoded_host, is_trusted)
         is_ip = self._is_ip_host(host)
         brand = self._match_brand(host, decoded_host, sld,
-                                  registered_domain, subdomains)
+                                  registered_domain, subdomains, suffix)
 
         # Цифры в имени — слабый намёк на подмену букв (0 вместо o,
         # 1 вместо l). Но у IP-адреса цифры и есть адрес, а у опечатки
@@ -311,7 +348,7 @@ class LexicalAnalyzer:
             has_non_ascii_host    = has_non_ascii(decoded_host) and not idn_native,
             has_mixed_scripts     = self._has_mixed_scripts(decoded_host),
             has_non_standard_port = self._is_non_standard_port(port, scheme, port_malformed),
-            has_encoded_host      = has_encoded_host,
+            has_encoded_host      = has_encoded_host or has_encoded_userinfo,
             has_redirect_params   = bool(_REDIRECT_PARAMS_RE.search(raw)),
             has_digits_in_domain  = digits_mean_something,
             is_insecure_scheme    = scheme == "http",
@@ -321,6 +358,7 @@ class LexicalAnalyzer:
             domain_length         = len(sld_human),
             hyphen_count          = decoded_host.count("-"),
             trigger_keywords      = keywords,
+            keywords_in_host      = self._keywords_in_host(sld_human, is_trusted),
             scam_pattern          = (None if is_trusted else
                                      _match_scam_pattern(
                                          f"{path_and_query} {decoded_host}")),
@@ -339,26 +377,29 @@ class LexicalAnalyzer:
     @staticmethod
     def _idn_is_native(human_host: str) -> bool:
         """
-        True, если нелатинское имя для этой зоны нормально.
+        True, если нелатиница в домене ожидаема, а не прячется.
 
-        `мвд.рф` иначе и не записать. А вот кириллица под `.com` —
-        попытка выдать себя за латиницу, и её мы по-прежнему считаем
-        признаком риска. Признак «родного» IDN: и имя, и зона — одна
-        и та же нелатинская письменность.
+        Прячется она одним способом: КОГДА В ОДНОМ СЛОВЕ смешаны
+        алфавиты. `аpple.com` — кириллическая «а» плюс латинские
+        «pple» — на глаз неотличим от настоящего.
 
-        Смотрит только на человеческий вид: адрес могли набрать и
-        русскими буквами, и через xn--, а признак обязан выйти один
-        и тот же, иначе один сайт получает два разных вердикта.
+        А вот `мвд.рф`, `www.мвд.рф`, `société.fr`, `bücher.de` ничего
+        не прячут: каждое слово там написано целиком на одном алфавите.
+        Раньше проверка требовала, чтобы ВЕСЬ адрес был одной
+        нелатинской письменностью, и ломалась от приставки `www`
+        (`www.мвд.рф` — 90 баллов и «ОПАСНО») и от любой латинской зоны
+        (`société.fr` — 75). Для сервиса, который читают люди со всего
+        мира, это было хуже пропуска.
+
+        Полностью нелатинскую подделку под бренд (`аррӏе.com`) ловит
+        отдельный детектор брендов, и его вес выше.
         """
         labels = [l for l in human_host.split(".") if l]
         if len(labels) < 2:
             return False
-        tld_scripts = scripts_of(labels[-1])
-        name_scripts = scripts_of("".join(labels[:-1]))
-        # Зона должна быть нелатинской: .рф, .бел, .укр, .москва.
-        if not tld_scripts or tld_scripts == {"LATIN"}:
+        if not has_non_ascii(human_host):
             return False
-        return name_scripts and name_scripts == tld_scripts
+        return not any(mixed_scripts(label) for label in labels)
 
     @staticmethod
     def _safe_netloc(raw: str) -> str:
@@ -434,9 +475,29 @@ class LexicalAnalyzer:
         return sorted(found)
 
     @staticmethod
+    def _keywords_in_host(sld: str, is_trusted: bool) -> bool:
+        """
+        Стоят ли слова-маркеры в САМОМ ИМЕНИ домена.
+
+        Разница принципиальная. `secure-login-verify.top` — так
+        мошенник называет свой домен, чтобы он выглядел служебным.
+        А `tele2.ru/security/password/recovery` — обычное устройство
+        адресов настоящего сайта: слова входа есть на КАЖДОЙ честной
+        странице входа. Пока и то и другое весило одинаково, честные
+        личные кабинеты набирали на «ПОДОЗРИТЕЛЬНО».
+
+        Смотрим только РЕГИСТРИРУЕМОЕ имя, без поддоменов: `id.rbc.ru`,
+        `lk.megafon.ru`, `cabinet.tele2.ru` — это как раз честные сайты,
+        и поддомен «id» им не в упрёк.
+        """
+        if is_trusted:
+            return False
+        return bool(_KEYWORD_RE.search(sld))
+
+    @staticmethod
     def _match_brand(host: str, decoded_host: str, sld: str,
-                     registered_domain: str,
-                     subdomains: list[str]) -> Optional[BrandMatch]:
+                     registered_domain: str, subdomains: list[str],
+                     suffix: str = "") -> Optional[BrandMatch]:
         """
         Детект имперсонации бренда — три независимых техники.
 
@@ -477,7 +538,25 @@ class LexicalAnalyzer:
 
         was_obfuscated = has_non_ascii(host) or "xn--" in host
 
+        zone_is_cheap = (LexicalAnalyzer._is_suspicious_tld(suffix)
+                         or LexicalAnalyzer._is_abused_tld(suffix))
+
         for brand, owned in BRAND_DOMAINS.items():
+            # Имя домена — РОВНО бренд, и зона приличная: это почти
+            # наверняка сам бренд в другой зоне (`github.blog`,
+            # `yandex.by`, `alfabank.by`, `ozon.travel`). Полного списка
+            # доменов Google не существует, дописывать их в словарь
+            # бесполезно — а обвинять компанию в подделке самой себя
+            # мы не вправе: 45 баллов и «ПОДОЗРИТЕЛЬНО» честным сайтам.
+            #
+            # `paypal.tk` выглядит так же, но зона бесплатная, и это уже
+            # приём захватчика — там оговорка не действует.
+            # Сравниваем ИСХОДНОЕ имя, а не свёрнутое: `paypa1` после
+            # свёртки leet-символов тоже даёт «paypal», и по свёрнутому
+            # оговорка накрыла бы настоящие опечаточные домены.
+            if sld == brand and not zone_is_cheap:
+                continue
+
             # Гомоглиф: после свёртки вышел бренд, а хост был не-ASCII.
             if was_obfuscated and homoglyph_sld == brand:
                 return BrandMatch(

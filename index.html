@@ -81,14 +81,15 @@
            причина, и только за кнопкой «Подробнее» баллы и веса.
            Настольная вёрстка ниже этой ширины не показывается вовсе,
            поэтому её правки сюда не протекают. */
-        /* Своё определение .hidden: мобильный слой не должен разваливаться,
-           если Tailwind с CDN не загрузился (нет сети, блокировка, CDN лёг).
-           Без этого скрытые блоки показывались бы пустыми. */
-        .hidden { display:none !important; }
-
         #mobileApp { display:none; }
 
         @media (max-width: 640px) {
+            /* Своё определение .hidden — на случай, если Tailwind с CDN
+               не загрузился: без него скрытые блоки показывались пустыми.
+               ВНУТРИ медиазапроса, и это принципиально. Снаружи оно
+               перебивало у Tailwind правило `md:flex` и уносило с
+               настольной страницы меню и переключатель языка. */
+            #mobileApp .hidden, .m-screen .hidden { display:none !important; }
             body > .bg-glow, body > nav, body > main, body > footer { display:none !important; }
             body { background:#0a0d12;overflow-x:hidden; }
             /* Своё box-sizing, а не Tailwind'овский: если CDN не ответил,
@@ -785,6 +786,8 @@ const SIG = {
         PAGE_HIDDEN_INPUTS:{t:'Скрытые поля в форме', d:'Так передают метки кампании в массовых рассылках.'},
         PAGE_CLEAN:{t:'Содержимое страницы', d:'Форм для пароля и подозрительных кнопок входа нет.'},
         PAGE_NOT_SEEN:{t:'Страница не показана', d:'Сайт не отдал содержимое — проверить его не удалось.'},
+        URLHAUS_HOST_SHARED:{t:'URLhaus: хост', d:'На площадке находили вредоносные ссылки, но это большой сайт с пользовательским содержимым — к этой ссылке отношения не имеет.'},
+        TRIGGER_KEYWORDS_PATH:{t:'Слова входа в адресе', d:'На странице входа это обычное дело — само по себе ни о чём не говорит.'},
         HTTPS_OK:{t:'Протокол', d:'Соединение шифруется (HTTPS).'},
         ASCII_OK:{t:'Символы', d:'Только стандартные латинские символы.'},
         TLD_OK:{t:'Зона', d:'Обычная доменная зона.'},
@@ -853,6 +856,8 @@ const SIG = {
         PAGE_HIDDEN_INPUTS:{t:'Hidden form fields', d:'Used to carry campaign tags in mass mailings.'},
         PAGE_CLEAN:{t:'Page contents', d:'No password forms or suspicious login buttons.'},
         PAGE_NOT_SEEN:{t:'Page not shown', d:'The site did not return its contents, so it could not be checked.'},
+        URLHAUS_HOST_SHARED:{t:'URLhaus: host', d:'Malicious links were found on this platform, but it hosts user content — this says nothing about this link.'},
+        TRIGGER_KEYWORDS_PATH:{t:'Login words in the address', d:'Normal for a login page — on its own it means nothing.'},
         HTTPS_OK:{t:'Protocol', d:'Connection is encrypted (HTTPS).'},
         ASCII_OK:{t:'Characters', d:'Standard Latin characters only.'},
         TLD_OK:{t:'Zone', d:'Ordinary domain zone.'},

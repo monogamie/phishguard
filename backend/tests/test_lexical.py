@@ -213,19 +213,89 @@ def test_same_domain_scores_the_same_typed_either_way():
     assert human.has_non_ascii_host is False
 
 
-def test_cyrillic_under_latin_tld_is_still_suspicious():
-    """Кириллица под .com прячется под латиницу — это не «родной» IDN."""
+def test_lookalike_is_caught_by_the_brand_detector():
+    """
+    Полностью кириллическое `аррӏе.com` — подделка под apple, но ловит
+    её детектор брендов, а не правило про нелатиницу. Правило про
+    нелатиницу на такое реагировать не должно: иначе под раздачу
+    попадают все честные домены мира (см. тест ниже).
+    """
     f = la.analyze("https://xn--80ak6aa92e.com/")
-    assert f.has_punycode is True
+    assert f.brand_match is not None
+    assert f.brand_match.kind == "homograph"
+
+
+def test_mixed_script_inside_one_word_is_suspicious():
+    """Настоящая маскировка: кириллическая «а» и латинские «pple»
+    в одном слове, на глаз не отличить."""
+    f = la.analyze("https://аpple.com/")
     assert f.idn_is_native is False
+    assert f.has_mixed_scripts is True
+
+
+@pytest.mark.parametrize("url", [
+    "https://мвд.рф/",
+    "https://www.мвд.рф/",            # приставка www ломала всю зону .рф
+    "https://www.президент.рф/",
+    "https://société.fr/",            # а латинская зона — весь остальной мир
+    "https://bücher.de/",
+    "https://україна.ua/",
+    "https://한국.kr/",
+])
+def test_international_domains_are_not_suspicious(url):
+    """
+    Нелатиница сама по себе — не улика. Она становится уликой, только
+    когда алфавиты смешаны ВНУТРИ одного слова.
+
+    Раньше проверка требовала, чтобы весь адрес был одной нелатинской
+    письменностью: `www.мвд.рф` получал 90 баллов и «ОПАСНО» из-за
+    латинского `www`, а `société.fr` — 75 из-за латинской зоны.
+    """
+    f = la.analyze(url)
+    assert f.idn_is_native is True, f"{url}: не опознан как нормальный"
+    assert f.has_non_ascii_host is False, f"{url}: помечен как нелатиница"
+    assert f.has_mixed_scripts is False
 
 
 def test_russian_keywords_found_in_punycode_domain():
-    """В `xn--`-форме русских слов не видно, а жертва видит именно их."""
-    # голосование-конкурс.рф
-    f = la.analyze("https://xn----7sbfdmrqacwedbah8afm0b.xn--p1ai/")
+    """В `xn--`-форме русских слов не видно, а жертва видит именно их.
+
+    Схему берём настоящую — «голосование за ребёнка»: два слова из
+    РАЗНЫХ групп. Пара «голосование + конкурс» схемой не считается,
+    это одна и та же мысль дважды (см. test_scam_pattern_needs_two_...).
+    """
+    # голосование-за-ребенка.рф
+    human = "голосование-за-ребенка.рф"
+    puny = ".".join(l.encode("idna").decode() if any(ord(c) > 127 for c in l) else l
+                    for l in human.split("."))
+    f = la.analyze(f"https://{puny}/")
     assert "голосование" in f.trigger_keywords
     assert f.scam_pattern == "fake_vote"
+
+
+def test_scam_pattern_needs_two_different_ideas():
+    """
+    Схема — это связка «проголосуй» + «за ребёнка». Пока «конкурс» и
+    «голосование» стояли в обеих группах, схему поднимало одно слово,
+    и `культура.рф/конкурс` получала 72 балла и «ОПАСНО».
+    """
+    assert la.analyze("https://культура.рф/конкурс").scam_pattern is None
+    assert la.analyze("https://x.ru/konkurs-programmistov").scam_pattern is None
+    # Слово внутри другого слова тоже не схема: граница слева должна
+    # закрывать кириллицу, а не только латиницу.
+    assert la.analyze("https://всероссийскийконкурс.рф/").scam_pattern is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://golosovanie-za-rebenka.ru/",      # падежи, а не именительный
+    "https://konkurs-detey-2026.top/golosovat",
+    "https://x.top/golosuy-za-malysha",
+    "https://голосование-за-ребенка.рф/",
+])
+def test_founding_scam_is_caught_in_its_real_forms(url):
+    """Живые адреса пишут «za-rebenka» и «detey», а словарь знал только
+    именительный падеж. Это ровно та схема, ради которой проект и был."""
+    assert la.analyze(url).scam_pattern == "fake_vote", url
 
 
 # ── Регрессия: фишинг на чужой площадке получал «БЕЗОПАСНО» ──────

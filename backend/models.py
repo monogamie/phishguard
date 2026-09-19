@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
+from normalize import normalize_authority
+
 MAX_URL_LENGTH = 2048
 
 
@@ -70,7 +72,13 @@ class ScanRequest(BaseModel):
         else:
             v = "https://" + v
 
-        # 4. Хост обязан существовать и быть разбираемым.
+        # 4. Обратный слеш в адресной части браузер считает разделителем,
+        #    а urlsplit — нет. Приводим здесь, на входе, чтобы ВСЕ уровни
+        #    (и проверка SSRF, и скачивание страницы) шли туда же, куда
+        #    уйдёт жертва, а не на домен, спрятанный справа от слеша.
+        v = normalize_authority(v)
+
+        # 5. Хост обязан существовать и быть разбираемым.
         #    urlsplit ленив: .hostname/.port бросают ValueError только
         #    при обращении, поэтому трогаем их здесь, а не в пайплайне.
         try:
@@ -237,6 +245,7 @@ class LexicalFeatures(BaseModel):
     domain_length:         int = 0
     hyphen_count:          int = 0
     trigger_keywords:      list[str] = Field(default_factory=list)
+    keywords_in_host:      bool = False   # слова в имени домена, а не в пути
     suspicious_tld:        bool = False
     abused_tld:            bool = False
     scam_pattern:          Optional[str] = None   # fake_vote | fake_payout | fake_prize

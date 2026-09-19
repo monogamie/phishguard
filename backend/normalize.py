@@ -62,6 +62,36 @@ def decode_punycode(host: str) -> str:
     return ".".join(out)
 
 
+_SPECIAL_SCHEMES = ("http://", "https://")
+# Символы, на которых кончается адресная часть (то, что до пути).
+_AUTHORITY_END = "/?#" + chr(92)
+
+
+def normalize_authority(url: str) -> str:
+    """
+    Приводит адрес к тому виду, как его понимает браузер.
+
+    Браузер считает обратный слеш таким же разделителем, как прямой, а
+    питоновский `urlsplit` — нет. Из-за этого `https://evil.top\@bank.ru/`
+    для браузера ведёт на `evil.top`, а для нас — на `bank.ru`: жертва
+    уходит на одну страницу, мы проверяем другую и говорим «безопасно».
+
+    Трогаем только адресную часть: в пути обратный слеш безобиден.
+    """
+    lowered = url[:8].lower()
+    scheme_len = next((len(s) for s in _SPECIAL_SCHEMES if lowered.startswith(s)), 0)
+    if not scheme_len:
+        return url
+
+    rest = url[scheme_len:]
+    cut = next((i for i, ch in enumerate(rest) if ch in _AUTHORITY_END), len(rest))
+    if cut == len(rest) or rest[cut] != chr(92):
+        return url
+    # Разделитель оказался обратным слешем — заменяем его на прямой,
+    # и адресная часть кончается там же, где кончилась бы у браузера.
+    return url[:scheme_len] + rest[:cut] + "/" + rest[cut + 1:]
+
+
 def to_ascii_host(host: str) -> str:
     """
     Приводит хост к `xn--`-форме: `мвд.рф` → `xn--b1aew.xn--p1ai`.
@@ -232,6 +262,7 @@ def mixed_scripts(text: str) -> bool:
 __all__ = [
     "decode_punycode",
     "to_ascii_host",
+    "normalize_authority",
     "fold_homoglyphs",
     "fold_leet",
     "fold_sequences",
