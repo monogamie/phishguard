@@ -177,3 +177,41 @@ def test_health_not_rate_limited(client, monkeypatch):
 def test_openapi_generates(client):
     """Схема должна собираться: это и есть публичная документация API."""
     assert client.get("/openapi.json").status_code == 200
+
+
+def test_scan_deadline_covers_waiting_in_the_queue(monkeypatch):
+    """
+    Дедлайн стоял ВНУТРИ семафора, поэтому ограничивал только саму
+    работу: под нагрузкой запрос висел в очереди сколько угодно, и
+    обещанные 30 секунд не соблюдались — 23 запроса из 120 шли дольше.
+    """
+    import inspect
+    import main
+
+    source = inspect.getsource(main._scan)
+    # Дедлайн должен оборачивать ФУНКЦИЮ, которая берёт семафор, —
+    # тогда он накрывает и ожидание очереди, и работу.
+    assert "wait_for(_queued()" in source.replace(" ", "").replace("\n", ""), (
+        "wait_for снова не охватывает взятие семафора — очередь без дедлайна"
+    )
+    body = source[source.index("async def _queued"):]
+    assert "async with _scan_semaphore" in body
+
+
+def test_batch_has_a_deadline_of_its_own():
+    """Двадцать ссылок по пять за раз — четыре волны. Без общего
+    ограничения пачка висела кратно дольше одиночной проверки."""
+    import inspect
+    import main
+
+    source = inspect.getsource(main.scan_batch) if hasattr(main, "scan_batch") else ""
+    if not source:
+        for name, obj in vars(main).items():
+            if callable(obj) and "batch" in name.lower():
+                try:
+                    source = inspect.getsource(obj)
+                except (OSError, TypeError):
+                    continue
+                if "gather" in source:
+                    break
+    assert "wait_for" in source, "у пачки нет собственного дедлайна"
