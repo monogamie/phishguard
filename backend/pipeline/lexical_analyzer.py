@@ -117,11 +117,25 @@ _SHORTENER_DOMAINS: frozenset[str] = frozenset({
 })
 
 # Параметры открытого редиректа.
-_REDIRECT_PARAMS_RE = re.compile(
-    r"(?i)[?&](url|redirect|redirect_uri|redirect_url|goto|go|link|"
-    r"forward|return|returnurl|return_to|next|redir|dest|destination|"
-    r"continue|target|out|r|u)=",
+# Параметр переадресации опознаём по ДВУМ приметам сразу: знакомому
+# имени ИЛИ значению, которое само похоже на адрес. Одного имени мало
+# (список никогда не полон: `to=`, `back=`, `jump=` и десяток местных),
+# а одного значения — опасно: `?q=https://...` бывает у поиска.
+_REDIRECT_PARAM_NAMES = re.compile(
+    r"(?i)[?&](url|redirect|redirect_uri|redirect_url|redirect_to|goto|go|"
+    r"link|forward|return|returnurl|returnto|return_to|return_path|next|"
+    r"redir|dest|destination|continue|target|to|back|jump|openurl|out|r|u)=",
 )
+# Значение, которое само является адресом: `?anything=https://evil.top`
+# или его процент-кодированная форма `?x=https%3A%2F%2Fevil.top`.
+_REDIRECT_PARAM_VALUES = re.compile(
+    r"(?i)[?&][a-z_0-9]{1,24}=(https?(://|%3a%2f%2f)|%2f%2f)",
+)
+
+
+def _has_redirect_params(raw: str) -> bool:
+    return bool(_REDIRECT_PARAM_NAMES.search(raw)
+                or _REDIRECT_PARAM_VALUES.search(raw))
 
 # Процентное кодирование.
 _PERCENT_ENCODED_RE = re.compile(r"%[0-9a-fA-F]{2}")
@@ -371,7 +385,7 @@ class LexicalAnalyzer:
             has_mixed_scripts     = self._has_mixed_scripts(decoded_host),
             has_non_standard_port = self._is_non_standard_port(port, scheme, port_malformed),
             has_encoded_host      = has_encoded_host or has_encoded_userinfo,
-            has_redirect_params   = bool(_REDIRECT_PARAMS_RE.search(raw)),
+            has_redirect_params   = _has_redirect_params(raw),
             has_digits_in_domain  = digits_mean_something,
             is_insecure_scheme    = scheme == "http",
             is_shortener          = registered_domain in _SHORTENER_DOMAINS,

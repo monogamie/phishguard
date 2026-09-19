@@ -261,9 +261,17 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
 async def _scan(url: str) -> ScanResponse:
     """Скан с кешем, дедупликацией и общим дедлайном."""
     async def _factory() -> ScanResponse:
-        async with _scan_semaphore:
-            return await asyncio.wait_for(_run_pipeline(url),
-                                          timeout=settings.SCAN_TOTAL_TIMEOUT)
+        # Дедлайн охватывает И ожидание очереди, и саму работу.
+        # Пока `wait_for` стоял внутри `async with`, ограничена была
+        # только работа: под нагрузкой запрос спокойно висел в очереди
+        # к семафору сколько угодно, и заявленные 30 секунд не
+        # соблюдались — замерено, 23 запроса из 120 шли дольше.
+        async def _queued() -> ScanResponse:
+            async with _scan_semaphore:
+                return await _run_pipeline(url)
+
+        return await asyncio.wait_for(_queued(),
+                                      timeout=settings.SCAN_TOTAL_TIMEOUT)
 
     cached = await _scan_cache.get(url)
     if cached is not None:
@@ -375,8 +383,27 @@ async def scan_batch(request: BatchScanRequest) -> list[ScanResponse]:
         async with gate:
             return await _scan(u)
 
-    results = await asyncio.gather(*(_guarded(u) for u in validated),
-                                   return_exceptions=True)
+    # У пачки свой дедлайн: 20 ссылок по 5 за раз — это четыре волны,
+    # и без общего ограничения запрос мог висеть кратно дольше, чем
+    # обещано для одиночной проверки. Ждём столько, сколько нужно на
+    # все волны, но не больше — и не бесконечно.
+    waves = -(-len(validated) // max(settings.BATCH_CONCURRENCY, 1))
+    batch_deadline = settings.SCAN_TOTAL_TIMEOUT * waves + 5
+
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*(_guarded(u) for u in validated),
+                           return_exceptions=True),
+            timeout=batch_deadline,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Batch of %d timed out after %.0fs",
+                       len(validated), batch_deadline)
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=("Проверка пачки заняла слишком много времени. "
+                    "Попробуйте меньше ссылок за раз."),
+        ) from None
 
     # Один упавший URL не должен рушить весь батч: возвращаем для
     # него «неизвестно» с пояснением, остальные отдаём как есть.

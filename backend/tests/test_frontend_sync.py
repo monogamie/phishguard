@@ -138,3 +138,22 @@ def test_scam_pattern_codes_match_between_engines(html):
     for code, _a, _b in _SCAM_PATTERNS:
         assert f"code:'{code}'" in html, f"нет схемы {code} в index.html"
         assert f"{code}:" in html, f"нет подписи схемы {code}"
+
+
+def test_main_reason_order_names_real_signals(html):
+    """
+    Экран результата выбирает главную причину по этому списку. Коды в
+    нём были написаны от руки, и два самых сильных — попадание в базу
+    Google и в URLhaus — назывались неправильно, поэтому главной
+    причиной стать не могли никогда.
+    """
+    import re
+    block = _js_block(html, "const M_REASON_ORDER = [", "];")
+    listed = re.findall(r"'([A-Z_0-9]+)'", block)
+    assert listed, "не нашёл список главных причин"
+
+    scorer = (Path(__file__).resolve().parents[1]
+              / "pipeline" / "scorer.py").read_text(encoding="utf-8")
+    real = set(re.findall(r"c\.(?:add|ok)\(\s*\"([A-Z_0-9]+)\"", scorer))
+    unknown = [code for code in listed if code not in real]
+    assert not unknown, f"таких признаков скорер не выдаёт: {unknown}"

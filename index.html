@@ -347,6 +347,20 @@
             <p class="text-sm text-gray-400 leading-relaxed" data-i18n="f3_desc">POST /scan возвращает JSON с машиночитаемыми кодами признаков.</p>
         </div>
     </div>
+
+    <!-- История проверок. Пишется и с компьютера, и с телефона, но
+         показать её до сих пор было негде, кроме телефона. -->
+    <section id="deskHistory" class="hidden max-w-3xl mx-auto mt-16 text-left">
+        <div class="flex items-baseline justify-between mb-4">
+            <h3 class="text-xs mono uppercase tracking-widest text-slate-500"
+                data-i18n="m_hist_h">История</h3>
+            <button type="button" id="deskHistClear"
+                    class="text-xs text-slate-500 hover:text-red-400 transition bg-transparent border-none cursor-pointer"
+                    data-i18n="m_hist_clear">Очистить историю</button>
+        </div>
+        <p class="text-xs text-slate-600 mb-3" data-i18n="m_hist_sub_desk">Хранится только на этом компьютере, никуда не отправляется</p>
+        <div id="deskHistList" class="glass rounded-2xl divide-y divide-white/5"></div>
+    </section>
 </main>
 
 <footer class="p-6 border-t border-gray-800 text-center text-xs text-gray-700 bg-black/20 mono">
@@ -1874,7 +1888,10 @@ function renderEngineTags(result) {
     }
 }
 
+let lastDesktopResult = null;
+
 function renderResult(result) {
+    lastDesktopResult = result;
     const circle = $('scoreCircle');
     circle.setAttribute('stroke', COLORS[result.level]);
     $('scoreNum').textContent = result.score;
@@ -1974,6 +1991,7 @@ async function startScan() {
         const result = applyConfidence(
             Object.assign({}, cached, { cached:true, verdict:verdictOf(cached.score) }));
         histAdd(normalized, result);
+        renderDesktopHistory();
         showInline(raw, result.verdict, result.level);
         renderResult(result);
         return;
@@ -2042,6 +2060,7 @@ async function startScan() {
     cacheSet(normalized, result);
     result = applyConfidence(result);
     histAdd(normalized, result);
+    renderDesktopHistory();
     showInline(raw, result.verdict, result.level);
     renderResult(result);
 }
@@ -2090,7 +2109,14 @@ function applyLang() {
         node.classList.toggle('on', node.dataset.lang === lang);
     });
     // Тексты результата подставлены не через data-i18n, а по данным,
-    // поэтому при смене языка их надо пересобрать.
+    // поэтому при смене языка их надо пересобрать. На десктопе это
+    // забывалось: интерфейс переключался, а сам разбор оставался на
+    // языке первой проверки.
+    if (lastDesktopResult && $('resultPanel').classList.contains('visible')) {
+        renderResult(Object.assign({}, lastDesktopResult,
+                                   { verdict: verdictOf(lastDesktopResult.score) }));
+    }
+    renderDesktopHistory();
     if ($('mobileApp')) {
         mRenderLast();
         if ($('mHistScreen').classList.contains('on')) mRenderHistory();
@@ -2190,11 +2216,12 @@ function mGo(id) {
    «страница выдаёт себя за Сбербанк» человеку говорит больше, чем
    «домену 2 дня», хотя вес у второго выше. */
 const M_REASON_ORDER = [
-    'GSB_THREAT', 'URLHAUS_LISTED', 'URLHAUS_HOST',
+    'GSB_MATCH', 'URLHAUS_URL', 'URLHAUS_HOST',
     'PAGE_BRAND_MISMATCH', 'BRAND_HOMOGRAPH', 'BRAND_TYPOSQUAT',
     'BRAND_IMPERSONATION', 'PAGE_CROSS_DOMAIN_FORM', 'SCAM_PATTERN',
     'PAGE_MESSENGER_LOGIN', 'DOMAIN_VERY_NEW', 'IP_IN_URL', 'AT_SYMBOL',
     'MIXED_SCRIPTS', 'CERT_MISMATCH', 'DOMAIN_RECENT',
+    'SHORTENER_UNRESOLVED', 'ENCODED_HOST', 'NON_STANDARD_PORT',
 ];
 
 function mMainReason(result) {
@@ -2471,6 +2498,35 @@ async function mStartScan() {
     mRenderResult(result, raw);
 }
 
+function renderDesktopHistory() {
+    const wrap = $('deskHistory');
+    if (!wrap) return;
+    const list = histRead();
+    wrap.classList.toggle('hidden', list.length === 0);
+    const box = $('deskHistList');
+    clear(box);
+    for (const item of list.slice(0, 10)) {
+        const row = el('button', 'w-full flex items-center gap-3 px-5 py-3 text-left bg-transparent border-none cursor-pointer hover:bg-white/[0.03] transition');
+        row.type = 'button';
+        const dot = el('span', 'w-2 h-2 rounded-full flex-shrink-0');
+        dot.style.background = M_LEVEL_COLOR[item.level] || M_LEVEL_COLOR.unverified;
+        row.appendChild(dot);
+        const host = el('span', 'mono text-sm text-slate-300 truncate flex-1',
+                        item.host || item.url);
+        row.appendChild(host);
+        const meta = el('span', 'text-xs whitespace-nowrap',
+                        mVerdictWordShort(item.level) + ' · ' + timeAgo(item.ts));
+        meta.style.color = M_LEVEL_COLOR[item.level] || M_LEVEL_COLOR.unverified;
+        row.appendChild(meta);
+        row.addEventListener('click', () => {
+            $('urlInput').value = item.url;
+            onInputChange();
+            startScan();
+        });
+        box.appendChild(row);
+    }
+}
+
 function initMobile() {
     if (!$('mobileApp')) return;
 
@@ -2571,6 +2627,11 @@ $('urlInput').addEventListener('keydown', event => {
 });
 
 initMobile();
+const deskClear = $('deskHistClear');
+if (deskClear) deskClear.addEventListener('click', () => {
+    if (confirm(t().m_hist_confirm)) { histClear(); renderDesktopHistory(); mRenderLast(); }
+});
+renderDesktopHistory();
 applyLang();
 </script>
 </body>
