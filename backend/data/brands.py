@@ -21,6 +21,7 @@ BRAND_DOMAINS: dict[str, frozenset[str]] = {
         "amazon.in", "primevideo.com", "amazonaws.com",
     }),
     "facebook":    frozenset({"facebook.com", "fb.com", "fbcdn.net", "messenger.com", "meta.com"}),
+    "pochta":      frozenset({"pochta.ru", "russianpost.ru"}),
     "microsoft":   frozenset({
         "microsoft.com", "microsoftonline.com", "live.com", "outlook.com",
         "hotmail.com", "office.com", "office365.com", "azure.com",
@@ -61,6 +62,37 @@ MIN_SUBSTRING_BRAND_LEN = 5
 BRAND_OWNED_DOMAINS: frozenset[str] = frozenset(
     d for domains in BRAND_DOMAINS.values() for d in domains
 )
+
+# ── Как бренд пишут люди, кроме канонического имени ──────────────
+# Сюда идут русские написания и короткие формы. Нужны потому, что
+# мошенник пишет так, как прочитает жертва: `сбербанк-онлайн.рф`,
+# `sber-vhod.top`. По каноническим латинским именам они не ловились.
+#
+# Короткие формы (`sber`, `vk`, `vtb`) опасны как подстрока: «vtb»
+# найдётся в куче слов. Поэтому они сверяются ТОЛЬКО с целой частью
+# домена между дефисами — `sber-vhod` ловится, `ozone` нет.
+BRAND_ALIASES: dict[str, frozenset[str]] = {
+    "sberbank":  frozenset({"сбербанк", "сбер", "sber", "sberbank"}),
+    "tinkoff":   frozenset({"тинькофф", "тинькоф", "tbank", "т-банк", "tinkof"}),
+    "alfabank":  frozenset({"альфабанк", "альфа-банк", "альфа", "alfa"}),
+    "vtb":       frozenset({"втб", "vtb"}),
+    "gosuslugi": frozenset({"госуслуги", "госуслуга", "gosuslugi", "esia"}),
+    "raiffeisen": frozenset({"райффайзен", "райфайзен", "raif"}),
+    "gazprom":   frozenset({"газпром", "gazprom"}),
+    "wildberries": frozenset({"вайлдберриз", "вайлдберис", "wb", "wildberries"}),
+    "ozon":      frozenset({"озон", "ozon"}),
+    "yandex":    frozenset({"яндекс", "yandex"}),
+    "telegram":  frozenset({"телеграм", "телеграмм", "tg", "telegram"}),
+    "vkontakte": frozenset({"вконтакте", "вк", "vk"}),
+    "mailru":    frozenset({"майлру", "mailru"}),
+    "avito":     frozenset({"авито", "avito"}),
+    "pochta":    frozenset({"почтароссии", "почта-россии", "pochta"}),
+    "apple":     frozenset({"эпл", "айклауд", "icloud"}),
+    "microsoft": frozenset({"майкрософт", "msft"}),
+}
+
+# Короткие формы сверяются только с целой частью домена.
+SHORT_ALIAS_MAX_LEN = 5
 
 # ── Площадки, где страницу может выложить кто угодно ─────────────
 # Домены настоящих компаний, поэтому имперсонацией они НЕ считаются.
@@ -122,6 +154,8 @@ __all__ = [
     "BRAND_DOMAINS",
     "BRAND_OWNED_DOMAINS",
     "TRUSTED_DOMAINS",
+    "BRAND_ALIASES",
+    "SHORT_ALIAS_MAX_LEN",
     "MULTI_TENANT_DOMAINS",
     "MULTI_TENANT_HOSTS",
     "MIN_SUBSTRING_BRAND_LEN",

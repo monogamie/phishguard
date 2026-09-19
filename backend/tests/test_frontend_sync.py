@@ -116,3 +116,25 @@ def test_every_signal_code_is_translated(html):
 ])
 def test_frontend_carries_the_same_exceptions(html, marker, why):
     assert marker in html, f"в index.html нет оговорки: {why}"
+
+
+def test_brand_aliases_match_between_engines(html):
+    """Псевдонимы брендов — вторая таблица, которая обязана совпадать.
+    Копия движка на странице ищет по ней же."""
+    from data.brands import BRAND_ALIASES
+
+    block = _js_block(html, "const BRAND_ALIASES = {")
+    for brand, aliases in BRAND_ALIASES.items():
+        assert f"{brand}:" in block, f"нет бренда {brand} в index.html"
+        for alias in aliases:
+            assert f"'{alias}'" in block, f"нет написания «{alias}» ({brand})"
+
+
+def test_scam_pattern_codes_match_between_engines(html):
+    """Новая схема в питоне — новая схема на странице, иначе один
+    и тот же адрес получает разные вердикты."""
+    from pipeline.lexical_analyzer import _SCAM_PATTERNS
+
+    for code, _a, _b in _SCAM_PATTERNS:
+        assert f"code:'{code}'" in html, f"нет схемы {code} в index.html"
+        assert f"{code}:" in html, f"нет подписи схемы {code}"

@@ -15,8 +15,10 @@ import tldextract
 
 from data.brands import (
     BRAND_DOMAINS,
+    BRAND_ALIASES,
     MULTI_TENANT_DOMAINS,
     MULTI_TENANT_HOSTS,
+    SHORT_ALIAS_MAX_LEN,
     MIN_SUBSTRING_BRAND_LEN,
     TRUSTED_DOMAINS,
 )
@@ -171,6 +173,22 @@ _SCAM_PATTERNS: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
      frozenset({"oformit", "poluchit", "karta", "schet", "nalog",
                 "gosuslugi", "bank", "perevod", "dengi", "card",
                 "получить", "оформить"})),
+    # «Ваша посылка ждёт, доплатите за доставку»
+    ("fake_delivery",
+     frozenset({"dostavka", "posylka", "posylki", "otpravlenie", "trek",
+                "tracking", "parcel", "delivery", "kurier", "kuryer",
+                "доставка", "посылка", "отправление", "трек"}),
+     frozenset({"oplatit", "oplata", "doplata", "doplatit", "tamozhnya",
+                "hranenie", "pay", "customs", "оплатить", "доплатить",
+                "таможня", "хранение"})),
+    # «У вас штраф, оплатите со скидкой»
+    ("fake_fine",
+     frozenset({"shtraf", "shtrafy", "gibdd", "gai", "narushenie",
+                "postanovlenie", "fine", "penalty", "штраф", "штрафы",
+                "гибдд", "нарушение"}),
+     frozenset({"oplatit", "oplata", "skidka", "proverit", "pogasit",
+                "sudebnyy", "pristav", "pay", "оплатить", "скидка",
+                "проверить", "погасить"})),
     # «Вы выиграли приз, заберите подарок»
     ("fake_prize",
      frozenset({"priz", "prize", "vyigrysh", "podarok", "podarki",
@@ -183,6 +201,8 @@ SCAM_PATTERN_LABELS = {
     "fake_vote": "поддельное голосование или конкурс",
     "fake_payout": "обещание выплаты или возврата денег",
     "fake_prize": "обещание приза или подарка",
+    "fake_delivery": "поддельная доставка или посылка",
+    "fake_fine": "поддельный штраф или постановление",
 }
 
 
@@ -418,16 +438,65 @@ class LexicalAnalyzer:
     @staticmethod
     def _is_ip_host(host: str) -> bool:
         """
-        True, если хост — это IP-литерал (v4 или v6).
+        True, если хост — это IP-адрес в любой записи.
 
+        Обычную точечную запись знает сам `ipaddress`. Но браузеры
+        понимают ещё три, и мошенники ими пользуются именно затем,
+        чтобы адрес не выглядел адресом:
+
+            http://3232235777/   — десятичная
+            http://0xC0A80001/   — шестнадцатеричная
+            http://0177.0.0.1/   — восьмеричная
+
+        Все три ведут на 192.168.0.1 или 127.0.0.1. Пока признак их не
+        видел, такая ссылка проходила как обычный домен.
         """
         if not host:
             return False
+        bare = host.strip("[]")
         try:
-            ipaddress.ip_address(host.strip("[]"))
+            ipaddress.ip_address(bare)
             return True
         except ValueError:
+            pass
+
+        # Одно число целиком: десятичное или шестнадцатеричное.
+        try:
+            if re.fullmatch(r"0[xX][0-9a-fA-F]+", bare):
+                value = int(bare, 16)
+            elif bare.isdigit():
+                value = int(bare, 10)
+            else:
+                value = None
+            if value is not None and 0 <= value <= 0xFFFFFFFF:
+                return True
+        except ValueError:
+            pass
+
+        # Точечная запись, где хотя бы одна часть не десятичная:
+        # `0177.0.0.1`, `0x7f.0.0.1`. Диапазоны проверяем так же, как
+        # это делает сеть: последняя часть добирает остаток адреса,
+        # а `999.999.999.999` не адрес ни в какой записи.
+        parts = bare.split(".")
+        if not 2 <= len(parts) <= 4 or not all(parts):
             return False
+        values = []
+        for part in parts:
+            try:
+                if re.fullmatch(r"0[xX][0-9a-fA-F]+", part):
+                    values.append(int(part, 16))
+                elif re.fullmatch(r"0[0-7]+", part):
+                    values.append(int(part, 8))
+                elif part.isdigit():
+                    values.append(int(part, 10))
+                else:
+                    return False
+            except ValueError:
+                return False
+        if any(v < 0 or v > 0xFF for v in values[:-1]):
+            return False
+        tail_bits = 8 * (5 - len(parts))
+        return 0 <= values[-1] < (1 << tail_bits)
 
     @staticmethod
     def _has_mixed_scripts(host: str) -> bool:
@@ -559,6 +628,11 @@ class LexicalAnalyzer:
         zone_is_cheap = (LexicalAnalyzer._is_suspicious_tld(suffix)
                          or LexicalAnalyzer._is_abused_tld(suffix))
 
+        # Имя домена так, как его читает человек, и по частям между
+        # дефисами: `вход-сбербанк` → {"вход", "сбербанк"}.
+        human_name = (decode_punycode(sld) if sld.startswith("xn--") else sld).lower()
+        name_parts = set(re.split(r"[-_.]", human_name))
+
         for brand, owned in BRAND_DOMAINS.items():
             # Имя домена — РОВНО бренд, и зона приличная: это почти
             # наверняка сам бренд в другой зоне (`github.blog`,
@@ -604,6 +678,27 @@ class LexicalAnalyzer:
                     kind="impersonation",
                     evidence=f"поддомен «{brand}» на домене {registered_domain}",
                 )
+
+            # 4а. Как бренд пишут люди: русские написания и короткие
+            #     формы. Длинные («сбербанк», «госуслуги») ищем как
+            #     подстроку человеческого вида домена, короткие
+            #     («сбер», «vtb») — только как ЦЕЛУЮ часть между
+            #     дефисами, иначе «озонотерапия» снова станет Ozon.
+            # Каноническое имя тоже проверяем здесь: для коротких
+            # брендов (`ozon`, `vtb`, `vk`) ветка 4 ниже их пропускает
+            # нарочно — подстрокой они дают шум. А целой частью между
+            # дефисами они ловятся без ложных: `ozon-bonus` да,
+            # `ozone.com` нет.
+            for alias in BRAND_ALIASES.get(brand, ()):
+                if len(alias) <= SHORT_ALIAS_MAX_LEN:
+                    if alias in name_parts:
+                        return BrandMatch(
+                            brand=brand, kind="impersonation",
+                            evidence=f"«{alias}» в чужом домене {human_name}")
+                elif alias in human_name:
+                    return BrandMatch(
+                        brand=brand, kind="impersonation",
+                        evidence=f"«{alias}» в чужом домене {human_name}")
 
             # 4. Подстрока — только для длинных имён: «vtb» даёт шум.
             if len(brand) >= MIN_SUBSTRING_BRAND_LEN:
