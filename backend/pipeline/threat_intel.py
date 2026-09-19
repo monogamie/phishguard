@@ -42,7 +42,11 @@ async def check_google_safe_browsing(url: str) -> ThreatIntelResult:
     api_key = settings.GOOGLE_SAFE_BROWSING_KEY
     if not api_key:
         logger.debug("GSB key not configured — skipping")
-        return ThreatIntelResult(checked=False, source="google_safe_browsing",
+        # Ключа нет — уровень выключен НАРОЧНО. Это не «источник не
+        # ответил»: достоверность от этого падать не должна, иначе
+        # сервис сам себе занижает оценку за собственную настройку.
+        return ThreatIntelResult(checked=False, skipped=True,
+                                 source="google_safe_browsing",
                                  error="API key not configured")
 
     payload = {

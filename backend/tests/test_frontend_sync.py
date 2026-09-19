@@ -77,23 +77,67 @@ def test_trusted_cap_matches(html):
     assert int(found.group(1)) == TRUSTED_DOMAIN_SCORE_CAP
 
 
+def _lang_sections(html: str, start: str) -> dict[str, str]:
+    """Режет словарь вида `{ ru: {...}, en: {...} }` на два куска."""
+    block = _js_block(html, start)
+    ru = block.index("ru:")
+    en = block.index("en:", ru)
+    return {"ru": block[ru:en], "en": block[en:]}
+
+
 def test_every_signal_code_is_translated(html):
     """
     Новый сигнал в скорере — это новая строчка в словаре `SIG` во
-    фронтенде. Забыл её, и пользователь видит `PAGE_NOT_SEEN` вместо
-    объяснения. А объяснимость здесь главная функция.
+    фронтенде, В ОБОИХ ЯЗЫКАХ. Забыл её, и пользователь видит
+    `PAGE_NOT_SEEN` вместо объяснения. А объяснимость здесь главная
+    функция.
+
+    Раньше тест искал код по всему файлу и был доволен переводом на
+    один язык: английская половина словаря отставала молча.
     """
     scorer = (Path(__file__).resolve().parents[1]
               / "pipeline" / "scorer.py").read_text(encoding="utf-8")
-    codes = set(re.findall(r"c\.(?:add|ok)\(\s*\"([A-Z_0-9]+)\"", scorer))
+    codes = set(re.findall(r'c\.(?:add|ok)\(\s*"([A-Z_0-9]+)"', scorer))
     assert codes, "не нашёл коды сигналов в scorer.py"
 
-    compact = html.replace(" ", "")
-    untranslated = sorted(c for c in codes if f"{c}:{{" not in compact)
-    assert not untranslated, (
-        "нет описания во фронтенде: " + ", ".join(untranslated) +
-        " — добавь в словарь SIG, в оба языка"
-    )
+    for lang, section in _lang_sections(html, "const SIG = {").items():
+        compact = section.replace(" ", "")
+        missing = sorted(c for c in codes if f"{c}:{{" not in compact)
+        assert not missing, (
+            f"нет описания на языке «{lang}»: " + ", ".join(missing) +
+            " — добавь в словарь SIG, в оба языка"
+        )
+
+
+def test_local_engine_codes_are_translated(html):
+    """
+    Обратная сторона: локальный движок выдаёт и свои коды, которых в
+    скорере нет вовсе (`TLD_OK`, `ASCII_OK`). Их тоже надо перевести —
+    иначе без сервера страница покажет сам код.
+    """
+    codes = set(re.findall(r"\b(?:add|ok)\(\s*'([A-Z_0-9]+)'", html))
+    assert codes, "не нашёл вызовов add/ok в локальном движке"
+
+    for lang, section in _lang_sections(html, "const SIG = {").items():
+        compact = section.replace(" ", "")
+        missing = sorted(c for c in codes if f"{c}:{{" not in compact)
+        assert not missing, (
+            f"локальный движок выдаёт без перевода на «{lang}»: "
+            + ", ".join(missing)
+        )
+
+
+def test_scam_labels_exist_in_both_languages(html):
+    """Подпись схемы обмана тоже двуязычная: код схемы приходит из
+    питона, а расшифровывается на странице."""
+    from pipeline.lexical_analyzer import _SCAM_PATTERNS
+
+    codes = [code for code, _a, _b in _SCAM_PATTERNS]
+    for lang, section in _lang_sections(html, "const SCAM_LABELS = {").items():
+        missing = [c for c in codes if f"{c}:" not in section.replace(" ", "")]
+        assert not missing, (
+            f"нет подписи схемы на языке «{lang}»: " + ", ".join(missing)
+        )
 
 
 # ── Поведение, а не только таблицы ───────────────────────────────

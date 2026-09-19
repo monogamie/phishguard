@@ -1,4 +1,5 @@
 """Тесты уровней 2b (сертификат), 2c (журналы CT) и 5 (страница)."""
+import asyncio
 import ssl
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -441,3 +442,55 @@ def test_rdap_404_for_an_unserved_zone_is_not_a_missing_domain():
     assert re.search(r"return None", branch), (
         "при неизвестной зоне надо возвращать None, чтобы отработал WHOIS"
     )
+
+
+# ── Пул WHOIS: слот принадлежит потоку, а не ожиданию ────────────
+
+@pytest.mark.asyncio
+async def test_whois_slot_stays_taken_while_thread_hangs(monkeypatch):
+    """
+    Таймаут `wait_for` не убивает поток: он продолжает занимать воркер
+    пула. Если при этом отпустить слот семафора, следующий запрос
+    войдёт внутрь и встанет в очередь к пулу, где свободных воркеров
+    нет, — и прождёт там полный таймаут вместо быстрого отказа.
+
+    Слот обязан держаться до конца потока.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from pipeline import domain_age
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def _hang(_domain):
+        started.set()
+        release.wait(10)
+        return None
+
+    monkeypatch.setattr(domain_age, "_fetch_whois_sync", _hang)
+    monkeypatch.setattr(domain_age, "_whois_semaphore", asyncio.Semaphore(1))
+    # Свой пул: общий к этому моменту мог закрыть любой тест,
+    # поднимавший и гасивший приложение.
+    pool = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(domain_age, "_whois_executor", pool)
+    monkeypatch.setattr(settings, "WHOIS_TIMEOUT", 0.3)
+
+    hung = asyncio.create_task(domain_age._lookup_whois("a.example", budget=2.0))
+    await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+    assert await hung is None, "зависший запрос должен вернуть None по таймауту"
+
+    # Поток всё ещё висит — значит слот всё ещё занят.
+    assert domain_age._whois_semaphore.locked(), (
+        "слот освободили, пока поток WHOIS ещё работает"
+    )
+
+    release.set()
+    for _ in range(100):
+        if not domain_age._whois_semaphore.locked():
+            break
+        await asyncio.sleep(0.02)
+    assert not domain_age._whois_semaphore.locked(), (
+        "поток закончился, а слот так и не вернулся в пул"
+    )
+    pool.shutdown(wait=False)

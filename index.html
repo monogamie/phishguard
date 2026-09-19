@@ -1566,8 +1566,9 @@ function engineLocal(rawInput) {
         // Связка слов, повторяющая известную схему обмана.
         const scam = matchScamPattern(path + ' ' + displayHost);
         if (scam) {
-            add('SCAM_PATTERN', 'danger', W.scam_pattern,
-                (SCAM_LABELS[lang] || SCAM_LABELS.ru)[scam]);
+            // Кладём КОД, а не перевод: результат кешируется, и
+            // подпись застревала в языке первой проверки.
+            add('SCAM_PATTERN', 'danger', W.scam_pattern, scam);
         }
     }
 
@@ -1783,7 +1784,16 @@ const DOT_CLS = {
     danger:'bg-red-400 shadow-[0_0_6px_#ef4444]',
 };
 
+function scamLabel(code) {
+    return (SCAM_LABELS[lang] || SCAM_LABELS.ru)[code] || code;
+}
+
 function signalText(sig) {
+    // Метка схемы обмана хранится кодом и переводится здесь, при
+    // отрисовке, — иначе она остаётся на языке первой проверки.
+    if (sig.code === 'SCAM_PATTERN' && sig.extra) {
+        sig = Object.assign({}, sig, { extra: scamLabel(sig.extra) });
+    }
     const dict = SIG[lang][sig.code];
     const title = dict ? dict.t : (sig.serverTitle || sig.code);
     let detail;
@@ -2122,6 +2132,9 @@ function applyLang() {
         if ($('mHistScreen').classList.contains('on')) mRenderHistory();
         if (mResult && $('mResultScreen').classList.contains('on')) {
             mRenderResult(mResult, $('mResUrl').textContent);
+        }
+        if (mResult && $('mDetailsScreen').classList.contains('on')) {
+            mRenderDetails(mResult);
         }
     }
 

@@ -77,7 +77,11 @@ def client_identifier(request: Request) -> str:
             # TRUSTED_PROXY_HOPS — сколько прокси стоит перед нами.
             chain = [part.strip() for part in forwarded.split(",") if part.strip()]
             if chain:
-                index = min(settings.TRUSTED_PROXY_HOPS, len(chain))
+                # Не меньше единицы: при 0 индекс `chain[-0]` — это
+                # `chain[0]`, то есть ровно то значение, которое
+                # подставляет сам клиент, и лимит снова обходится.
+                hops = max(1, settings.TRUSTED_PROXY_HOPS)
+                index = min(hops, len(chain))
                 return chain[-index]
         # X-Real-IP НЕ читаем. Его прокси перезаписывает, а вот клиент
         # может прислать свой — и, не отправив X-Forwarded-For, обойти
