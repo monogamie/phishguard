@@ -69,12 +69,27 @@ def test_thresholds_match(html):
         )
 
 
-def test_trusted_cap_matches(html):
-    from pipeline.scorer import TRUSTED_DOMAIN_SCORE_CAP
+@pytest.mark.parametrize("py_name,js_name", [
+    ("TRUSTED_DOMAIN_SCORE_CAP", "TRUSTED_SCORE_CAP"),
+    ("UNRESOLVED_SHORTENER_FLOOR", "UNRESOLVED_SHORTENER_FLOOR"),
+    ("UNRESOLVED_SHORTENER_CAP", "UNRESOLVED_SHORTENER_CAP"),
+])
+def test_scoring_constants_match(py_name, js_name, html):
+    """
+    Поверх сложения стоят правила с числами, и они решают вердикт не
+    меньше весов. Сверялся только потолок доверия — а пол сокращателя
+    во фронтенд не доехал вовсе, и `bit.ly` получал на странице 10
+    и зелёное «БЕЗОПАСНО» там, где сервер давал 35.
+    """
+    from pipeline import scorer
 
-    found = re.search(r"TRUSTED_SCORE_CAP\s*=\s*(\d+)", html)
-    assert found, "не нашёл TRUSTED_SCORE_CAP в index.html"
-    assert int(found.group(1)) == TRUSTED_DOMAIN_SCORE_CAP
+    expected = getattr(scorer, py_name)
+    found = re.search(rf"{js_name}\s*=\s*(\d+)", html)
+    assert found, f"не нашёл {js_name} в index.html"
+    assert int(found.group(1)) == expected, (
+        f"{js_name} на странице {found.group(1)}, "
+        f"а {py_name} в питоне {expected}"
+    )
 
 
 def _lang_sections(html: str, start: str) -> dict[str, str]:

@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
-from normalize import normalize_authority, encode_unparseable_userinfo
+from normalize import is_ip_host, normalize_scheme_separator, normalize_authority, encode_unparseable_userinfo
 
 MAX_URL_LENGTH = 2048
 
@@ -60,6 +60,11 @@ class ScanRequest(BaseModel):
 
         # 3. Схема. Дописываем https:// только если схемы нет вообще.
         #    Если схема есть, но она не http(s) — отказ.
+        #    Разделитель приводим ДО проверки: `https:\\evil.top/` —
+        #    это адрес со схемой, браузер по нему ходит. Без этого он
+        #    выглядел бесхозным, мы дописывали вторую схему и отвечали
+        #    «в адресе нет доменной зоны», хотя зона была на месте.
+        v = normalize_scheme_separator(v)
         lowered = v.lower()
         if "://" in v[:16] or lowered.startswith(("javascript:", "data:",
                                                   "file:", "vbscript:",
@@ -92,7 +97,13 @@ class ScanRequest(BaseModel):
 
         if not host:
             raise ValueError("В адресе не нашлось имени сайта")
-        if "." not in host and host != "localhost" and not host.startswith("["):
+
+        # IP-адрес — это тоже адрес, и проверять его надо, а не
+        # отказывать. `urlsplit` уже снял квадратные скобки с IPv6,
+        # поэтому ловить их по `[` бесполезно; а `3232235777` —
+        # обычный способ записать 192.168.0.1 так, чтобы он не
+        # выглядел адресом. Про «доменную зону» им говорить нечего.
+        if "." not in host and host != "localhost" and not is_ip_host(host):
             raise ValueError("В адресе нет доменной зоны — после точки должно быть окончание вроде .ru или .com")
 
         return v

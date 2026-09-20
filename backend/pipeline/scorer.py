@@ -493,7 +493,36 @@ def calculate_risk_score(
     elif not lexical.is_trusted_domain:
         c.ok("BRAND_CLEAN", "Имитация брендов", "Имитации известных брендов не обнаружено")
 
-    if lexical.has_punycode and not (brand and brand.kind == "homograph"):
+    # ── Нелатиница в домене: один факт, три способа его назвать ──
+    # Имя бренда, смешение алфавитов и punycode описывают одну и ту же
+    # подменённую букву. Весом говорит самый точный из доступных,
+    # остальные остаются в разборе с нулём: человек факт видит,
+    # а балл за него начисляется один раз.
+    brand_explains_host = brand is not None and (
+        brand.kind in ("homograph", "typosquat")
+        or lexical.has_mixed_scripts
+        or lexical.has_non_ascii_host
+    )
+    scripts_explain_host = lexical.has_mixed_scripts and not brand_explains_host
+
+    if lexical.has_mixed_scripts:
+        if brand_explains_host:
+            c.add("MIXED_SCRIPTS", Severity.INFO, "Смешение алфавитов",
+                  "В одном слове домена соседствуют символы разных алфавитов. "
+                  "Балл за это уже начислен выше — там же назван и бренд, "
+                  "под который подделываются",
+                  weight=0)
+        else:
+            c.add("MIXED_SCRIPTS", Severity.DANGER, "Смешение алфавитов",
+                  "В одном слове домена соседствуют символы разных алфавитов "
+                  "(например, латиница и кириллица) — признак подмены",
+                  weight_key="mixed_scripts")
+    elif lexical.has_non_ascii_host and not brand_explains_host:
+        c.add("NON_ASCII_HOST", Severity.WARN, "Не-ASCII символы в домене",
+              "Домен содержит символы вне латиницы",
+              weight_key="non_ascii_host")
+
+    if lexical.has_punycode:
         if lexical.idn_is_native:
             # Национальный домен иначе не записать: `мвд.рф` — это
             # всегда xn--. Балл здесь давал ложное «ОПАСНО» каждому
@@ -501,28 +530,17 @@ def calculate_risk_score(
             c.ok("PUNYCODE_NATIVE", "Национальный домен",
                  f"Адрес записан как «{lexical.decoded_host or lexical.host}» — "
                  f"для этой зоны это обычная запись, а не подмена")
+        elif brand_explains_host or scripts_explain_host:
+            c.add("PUNYCODE", Severity.INFO, "Punycode (IDN)",
+                  f"Домен закодирован как xn--… и разворачивается в "
+                  f"«{lexical.decoded_host or lexical.host}». Балл за эту "
+                  f"подмену уже начислен выше",
+                  weight=0)
         else:
             c.add("PUNYCODE", Severity.WARN, "Punycode (IDN)",
-                  f"Домен закодирован как xn--… и отображается как "
+                  f"Домен закодирован как xn--… и разворачивается в "
                   f"«{lexical.decoded_host or lexical.host}»",
                   weight_key="punycode")
-
-    # Гомоглиф бренда — это И ЕСТЬ смешение алфавитов и нелатиница,
-    # только названные точнее и весом больше. Дублировать его двумя
-    # общими признаками значит считать одну букву трижды.
-    brand_is_homograph = (lexical.brand_match is not None
-                          and lexical.brand_match.kind == "homograph")
-    if brand_is_homograph:
-        pass
-    elif lexical.has_mixed_scripts:
-        c.add("MIXED_SCRIPTS", Severity.DANGER, "Смешение алфавитов",
-              "В одном слове домена соседствуют символы разных алфавитов "
-              "(например, латиница и кириллица) — признак подмены",
-              weight_key="mixed_scripts")
-    elif lexical.has_non_ascii_host:
-        c.add("NON_ASCII_HOST", Severity.WARN, "Не-ASCII символы в домене",
-              "Домен содержит символы вне латиницы",
-              weight_key="non_ascii_host")
 
     if lexical.has_encoded_host:
         c.add("ENCODED_HOST", Severity.WARN, "Кодирование в домене",
@@ -663,9 +681,22 @@ def calculate_risk_score(
         # не приговор. И потолок доверия здесь не действует: значок
         # «известный домен с проверенной репутацией» рядом с «куда
         # ведёт — неизвестно» успокаивает ровно там, где не должен.
+        lifted = score < UNRESOLVED_SHORTENER_FLOOR
         score = max(score, UNRESOLVED_SHORTENER_FLOOR)
         score = min(score, UNRESOLVED_SHORTENER_CAP)
         trusted_ceiling_applies = False
+
+        # Иначе баллы не сходятся: видимых улик на 15, а показываем 35.
+        # Для сервиса, где объяснимость — главная функция, молчаливая
+        # надбавка хуже самой надбавки.
+        if lifted:
+            for signal in c.signals:
+                if signal.code == "SHORTENER_UNRESOLVED":
+                    signal.detail += (
+                        f". Поэтому балл поднят до {UNRESOLVED_SHORTENER_FLOOR}: "
+                        f"пока адрес не раскрыт, считать ссылку безопасной нельзя"
+                    )
+                    break
 
     # Правило 2: потолок доверия (не применяется поверх внешних улик
     # и поверх прямых улик, найденных на самой странице).

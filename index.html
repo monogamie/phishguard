@@ -583,6 +583,12 @@ const W = {
     brand_homograph: 60, domain_age_unknown: 5,
 };
 const TRUSTED_SCORE_CAP = 15;
+// Те же числа, что UNRESOLVED_SHORTENER_FLOOR/CAP в backend/pipeline/scorer.py.
+// Браузер по сокращённой ссылке пройти не может (CORS), то есть конечный
+// адрес здесь неизвестен ВСЕГДА. «Не смогли проверить» — не «безопасно»:
+// сервер давал такой ссылке 35, а страница 10 и зелёную галочку.
+const UNRESOLVED_SHORTENER_FLOOR = 35;
+const UNRESOLVED_SHORTENER_CAP = 45;
 
 /* ─── 2. Локализация ──────────────────────────────────────────────── */
 
@@ -1006,13 +1012,32 @@ function decodePunycodeHost(host) {
     }).join('.');
 }
 
+// Письменности, которые в живых языках стоят рядом в одном слове:
+// японский пишут кандзи и каной сразу, корейский — хангылем с кандзи.
+// Зеркало _SCRIPT_COMBINATIONS из backend/normalize.py.
+const SCRIPT_TESTS = [
+    ['LATIN',    /\p{Script=Latin}/u],
+    ['CYRILLIC', /\p{Script=Cyrillic}/u],
+    ['GREEK',    /\p{Script=Greek}/u],
+    ['HAN',      /\p{Script=Han}/u],
+    ['KANA',     /[\p{Script=Hiragana}\p{Script=Katakana}]/u],
+    ['HANGUL',   /\p{Script=Hangul}/u],
+    ['ARABIC',   /\p{Script=Arabic}/u],
+    ['HEBREW',   /\p{Script=Hebrew}/u],
+];
+const SCRIPT_COMBINATIONS = [
+    new Set(['HAN', 'KANA']),
+    new Set(['HAN', 'HANGUL']),
+];
+
 function mixedScripts(label) {
-    // Латиница и кириллица/греческий в одном слове — сильнейший
-    // индикатор гомоглифной атаки. Легитимные домены так не пишут.
-    const latin    = /[a-z]/i.test(label);
-    const cyrillic = /[Ѐ-ӿ]/.test(label);
-    const greek    = /[Ͱ-Ͽ]/.test(label);
-    return (latin && cyrillic) || (latin && greek) || (cyrillic && greek);
+    // Смешаны письменности, которые вместе не встречаются, — латиница
+    // с кириллицей, латиница с греческим. А вот японское слово пишется
+    // кандзи и хираганой сразу: считать это подменой значит обвинять
+    // целый язык (так сервер помечал `お名前.com` как «ОПАСНО»).
+    const found = SCRIPT_TESTS.filter(([, re]) => re.test(label)).map(([name]) => name);
+    if (found.length < 2) return false;
+    return !SCRIPT_COMBINATIONS.some(combo => found.every(name => combo.has(name)));
 }
 
 function nativeIdn(displayHost) {
@@ -1150,6 +1175,35 @@ const BRAND_ALIASES = {
 };
 const SHORT_ALIAS_MAX_LEN = 5;
 
+// Зеркало AMBIGUOUS_ALIASES из backend/data/brands.py. «Альфа», «ВК»,
+// «почта» — это ещё и название любой конторы: `alfa-remont.ru` —
+// ремонтная мастерская, а не банк. Улика не само слово, а приманка
+// рядом: `sber-vhod`, `ozon-bonus`.
+const AMBIGUOUS_ALIASES = new Set(
+    ['alfa','альфа','vk','вк','wb','tg','raif','icloud','pochta']);
+
+function keywordsInName(sld, subs) {
+    // Поддомен — тоже имя, которое видно в адресной строке. Но один
+    // короткий служебный поддомен и подставная простыня — разные вещи:
+    // `id.rbc.ru` честный, а `update-billing.suspended-account.x.ru`
+    // на телефоне читается как сайт «update-billing».
+    const test = part => { KEYWORD_RE.lastIndex = 0; return KEYWORD_RE.test(part); };
+    if (test(String(sld).toLowerCase())) return true;
+    const labels = (subs || []).filter(l => l !== 'www').map(l => l.toLowerCase());
+    if (labels.some(l => l.includes('-') && test(l))) return true;
+    return labels.filter(test).length >= 2;
+}
+
+function needsALure(name, nameParts, cheapZone) {
+    if (!AMBIGUOUS_ALIASES.has(name) || cheapZone) return false;
+    for (const part of nameParts) {
+        if (part === name) continue;
+        KEYWORD_RE.lastIndex = 0;
+        if (KEYWORD_RE.test(part)) return false;
+    }
+    return true;
+}
+
 
 
 const TRUSTED = new Set([...BRAND_OWNED,
@@ -1227,7 +1281,9 @@ const SCAM_PATTERNS = [
       b:['deti','detey','detej','detei','detok','detskiy','detsk','rebenok',
          'rebenka','rebyonka','rebionka','malysh','malysha','detsad','shkola',
          'grant','risunok','talant','kid','kids','child','children','baby',
-         'дети','детей','деток','ребенок','ребенка','ребёнка','малыш','малыша'] },
+         'дети','детей','деток','ребенок','ребенка','ребёнка','малыш','малыша',
+         'детск','детсад','школа','рисунок','талант','грант','малышей',
+         'ребят','ребятам'] },
     { code:'fake_payout',
       a:['vyplata','vyplaty','vozvrat','kompensaciya','posobie','subsidiya',
          'refund','payout','выплата','возврат'],
@@ -1361,7 +1417,17 @@ function findBrand(host, sld, registered, subs, displayHost, displaySld) {
     // У `paypal.tk` зона бесплатная — там оговорка не действует.
     const zone = (registered.split('.').pop() || '');
     const cheapZone = SUSPICIOUS_TLDS.has(zone) || ABUSED_TLDS.has(zone);
-    if (!cheapZone && BRAND_NAMES.has((sld || '').toLowerCase())) return null;
+    // Сверять надо и ASCII-имя, и человеческое, и все написания бренда:
+    // иначе `госуслуги.рф` и `vk.company` обвинялись в подделке самих
+    // себя — ACE-форма с ключом словаря не совпадает никогда.
+    const ownName = (displaySld || sld || '').toLowerCase();
+    if (!cheapZone) {
+        if (BRAND_NAMES.has((sld || '').toLowerCase())) return null;
+        if (BRAND_NAMES.has(ownName)) return null;
+        for (const aliases of Object.values(BRAND_ALIASES)) {
+            if (aliases.includes(ownName)) return null;
+        }
+    }
 
     // Русские написания и короткие формы. Длинные ищем подстрокой,
     // короткие — только целой частью между дефисами, иначе
@@ -1373,7 +1439,9 @@ function findBrand(host, sld, registered, subs, displayHost, displaySld) {
             const hit = alias.length <= SHORT_ALIAS_MAX_LEN
                 ? nameParts.has(alias)
                 : humanName.includes(alias);
-            if (hit) return { brand, kind:'impersonation', evidence:alias };
+            if (hit && !needsALure(alias, nameParts, cheapZone)) {
+                return { brand, kind:'impersonation', evidence:alias };
+            }
         }
     }
 
@@ -1398,6 +1466,7 @@ function findBrand(host, sld, registered, subs, displayHost, displaySld) {
             }
         }
         if (subs.includes(brand)) return { brand, kind:'impersonation' };
+        if (needsALure(brand, nameParts, cheapZone)) continue;
         if (brand.length >= 5 && (canonSld.includes(brand) || foldedHost.includes(brand))) {
             return { brand, kind:'impersonation' };
         }
@@ -1410,7 +1479,12 @@ function engineLocal(rawInput) {
     try { parsed = new URL(normalizeUrl(rawInput)); } catch { return null; }
 
     const host = parsed.hostname.toLowerCase();
-    const path = parsed.pathname + parsed.search;
+    // Браузер кодирует кириллицу в пути (`/голосование` →
+    // `/%D0%B3...`), и слова в нём становятся не видны. Сервер путь
+    // раскодирует, и до 20 сентября из-за этого расходился с
+    // страницей на русских адресах.
+    let path = parsed.pathname + parsed.search;
+    try { path = decodeURIComponent(path); } catch (e) { /* битые %XX — ищем как есть */ }
     const { registered, sld, tld, subs } = splitDomain(host);
     const isTrusted = TRUSTED.has(registered);
 
@@ -1466,24 +1540,35 @@ function engineLocal(rawInput) {
         ok('BRAND_CLEAN');
     }
 
-    // Punycode и смешение алфавитов.
-    if (host.includes('xn--') && !(brand && brand.kind === 'homograph')) {
-        if (nativeIdn(displayHost)) ok('PUNYCODE_NATIVE');
-        else add('PUNYCODE', 'warn', W.punycode, host + ' \u2192 ' + displayHost);
-    }
-    // Гомоглиф бренда — это И ЕСТЬ смешение алфавитов, только названное
-    // точнее и весом больше. Сервер перестал их дублировать 18 сентября,
-    // а сюда правка не доехала: страница давала 100 там, где сервер 65.
-    if (brand && brand.kind === 'homograph') {
-        /* уже сказано признаком бренда */
-    } else if (displayHost.split('.').some(mixedScripts)) {
-        add('MIXED_SCRIPTS', 'danger', W.mixed_scripts, displayHost);
-    } else if (hasNonAscii(displayHost) && !nativeIdn(displayHost)) {
+    // Нелатиница в домене: один факт, три способа его назвать. Имя
+    // бренда, смешение алфавитов и punycode описывают одну и ту же
+    // подменённую букву. Весом говорит самый точный из доступных,
+    // остальные остаются в разборе с нулём. Страница давала за
+    // `xn--micrsoft-zwg.com` 100 баллов, считая букву трижды.
+    const scriptsMixed = displayHost.split('.').some(mixedScripts);
+    const nonAscii     = hasNonAscii(displayHost) && !nativeIdn(displayHost);
+    const brandExplains = !!brand && (brand.kind === 'homograph'
+                                      || brand.kind === 'typosquat'
+                                      || scriptsMixed || nonAscii);
+
+    if (scriptsMixed) {
+        add('MIXED_SCRIPTS', brandExplains ? 'info' : 'danger',
+            brandExplains ? 0 : W.mixed_scripts, displayHost);
+    } else if (nonAscii && !brandExplains) {
         // Для .рф кириллица в имени — норма, а не признак подмены.
         // Без этой оговорки сервер давал мвд.рф 0 баллов, а страница 35.
         add('NON_ASCII_HOST', 'warn', W.non_ascii_host, displayHost);
-    } else if (!isIp) {
+    } else if (!isIp && !brandExplains) {
         ok('ASCII_OK');
+    }
+
+    if (host.includes('xn--')) {
+        if (nativeIdn(displayHost)) ok('PUNYCODE_NATIVE');
+        else if (brandExplains || scriptsMixed) {
+            add('PUNYCODE', 'info', 0, host + ' \u2192 ' + displayHost);
+        } else {
+            add('PUNYCODE', 'warn', W.punycode, host + ' \u2192 ' + displayHost);
+        }
     }
 
     // Процентное кодирование в доменной части — ищем в СЫРОМ вводе,
@@ -1505,8 +1590,11 @@ function engineLocal(rawInput) {
         ok('HTTPS_OK');
     }
 
-    // Сокращатель.
-    if (SHORTENERS.has(registered)) {
+    // Сокращатель. Развернуть его из браузера нельзя, поэтому конечный
+    // адрес неизвестен всегда — и признак тот же, что у сервера, когда
+    // развернуть не удалось ему.
+    const unresolvedShortener = SHORTENERS.has(registered);
+    if (unresolvedShortener) {
         add('SHORTENER', 'warn', W.shortener, registered);
     }
 
@@ -1547,7 +1635,7 @@ function engineLocal(rawInput) {
             KEYWORD_RE.lastIndex = 0;
             // Слова в ИМЕНИ домена — приём мошенника. Те же слова в пути
             // есть у каждой честной страницы входа: без веса.
-            const inName = KEYWORD_RE.test((displaySld || sld).toLowerCase());
+            const inName = keywordsInName(displaySld || sld, subs);
             KEYWORD_RE.lastIndex = 0;
             const many = found.length >= 2;
             if (inName) {
@@ -1572,8 +1660,23 @@ function engineLocal(rawInput) {
         }
     }
 
+    // Пол и потолок нераскрытого сокращателя — то же правило и тот же
+    // порядок, что в backend/pipeline/scorer.py: сначала пол, потом
+    // потолок, и потолок доверия поверх него не действует.
+    let trustedCeiling = true;
+    if (unresolvedShortener) {
+        const lifted = score < UNRESOLVED_SHORTENER_FLOOR;
+        score = Math.max(score, UNRESOLVED_SHORTENER_FLOOR);
+        score = Math.min(score, UNRESOLVED_SHORTENER_CAP);
+        trustedCeiling = false;
+        if (lifted) {
+            const sig = signals.find(s => s.code === 'SHORTENER');
+            if (sig) sig.extra = registered + ' \u2192 ' + UNRESOLVED_SHORTENER_FLOOR;
+        }
+    }
+
     // Потолок доверия — то же правило, что и в backend/pipeline/scorer.py.
-    if (isTrusted) {
+    if (isTrusted && trustedCeiling) {
         score = Math.min(score, TRUSTED_SCORE_CAP);
         ok('TRUSTED_DOMAIN', registered);
     }
