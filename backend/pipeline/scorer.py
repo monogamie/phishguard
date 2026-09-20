@@ -195,7 +195,10 @@ def calculate_risk_score(
         # признак показываем, но без веса: пусть человек видит, что мы
         # смотрели, и понимает, что чужая зараза на GitHub — не повод
         # не открывать GitHub.
-        if lexical.is_trusted_domain:
+        # Площадка сюда входит наравне с доверенным доменом: у `t.me`
+        # и `telegra.ph` общий хост на всех, и трёх ссылок на весь
+        # телеграм хватало, чтобы пометить канал его основателя.
+        if lexical.is_trusted_domain or lexical.on_shared_platform:
             c.add("URLHAUS_HOST_SHARED", Severity.INFO, "URLhaus: хост",
                   f"На этом хосте когда-то находили вредоносные ссылки "
                   f"({reputation.host_url_count}), но это большая площадка "
@@ -387,12 +390,30 @@ def calculate_risk_score(
         #
         # Само размещение на площадке, где публикует кто угодно, здесь
         # и есть повод отнестись к форме пароля серьёзно.
-        hard_evidence = bool(foreign_brands) or bool(page.cross_domain_form) or (
-            lexical.on_shared_platform
-        ) or (
-            domain_age.checked and domain_age.age_days is not None
-            and domain_age.age_days < settings.DOMAIN_AGE_VERY_NEW
+        # Сам адрес уже выглядит приманкой: `my-prize-club.ru`,
+        # `golosovanie-za-rebenka.ru`, чужой бренд в имени, бесплатная
+        # зона. Баллов это не добавляет — они начислены выше, — но
+        # снимает презумпцию «обычная страница входа».
+        #
+        # Без этого форма пароля вместе с кнопкой «войти через Telegram»
+        # на своём домене старше недели весила ноль. Это дословно
+        # сценарий из истории проекта, и обрыв на седьмом дне был
+        # отвесный: 6 дней — 100 баллов, 7 дней — 47. Мошенники
+        # домены выдерживают, 40 дней для фишинга обычное дело.
+        address_is_a_lure = bool(
+            lexical.scam_pattern
+            or lexical.keywords_in_host
+            or lexical.brand_match
+            or lexical.suspicious_tld
         )
+        domain_is_young = (
+            domain_age.checked and domain_age.age_days is not None
+            and domain_age.age_days < settings.DOMAIN_AGE_NEW
+        )
+
+        hard_evidence = (bool(foreign_brands) or bool(page.cross_domain_form)
+                         or lexical.on_shared_platform
+                         or address_is_a_lure or domain_is_young)
 
         if page.cross_domain_form:
             c.add("PAGE_CROSS_DOMAIN_FORM", Severity.DANGER,
@@ -402,12 +423,30 @@ def calculate_risk_score(
                   weight_key="page_cross_domain_form")
 
         if foreign_brands:
-            c.add("PAGE_BRAND_MISMATCH", Severity.DANGER,
-                  "Чужой бренд на странице",
-                  f"Страница выдаёт себя за «{', '.join(foreign_brands)}», "
-                  f"но домен {shown_domain} этой компании "
-                  f"не принадлежит",
-                  weight_key="page_brand_mismatch")
+            names = ", ".join(foreign_brands)
+            # На площадке домен НИКОГДА не принадлежит бренду — там
+            # у всех общий адрес. Обвинять за это значит обвинять и
+            # официальный канал Сбербанка в телеграме. Улика — не само
+            # упоминание, а то, что рядом просят данные.
+            only_a_mention = (lexical.on_shared_platform
+                              and not page.cross_domain_form
+                              and not page.has_password_field
+                              and not page.messenger_login)
+            if only_a_mention:
+                c.add("PAGE_BRAND_MISMATCH", Severity.INFO,
+                      "Бренд на чужой площадке",
+                      f"Страница говорит от имени «{names}», а лежит на "
+                      f"{shown_domain} — площадке, где публикует кто угодно. "
+                      f"Это может быть и официальная страница компании, и "
+                      f"подделка: площадка такое не проверяет",
+                      weight=0)
+            else:
+                c.add("PAGE_BRAND_MISMATCH", Severity.DANGER,
+                      "Чужой бренд на странице",
+                      f"Страница выдаёт себя за «{names}», "
+                      f"но домен {shown_domain} этой компании "
+                      f"не принадлежит",
+                      weight_key="page_brand_mismatch")
 
         if page.messenger_login:
             names = ", ".join(page.messenger_login)
@@ -664,10 +703,13 @@ def calculate_risk_score(
     # доверия, и потолок неразвёрнутого сокращателя означают «мы не
     # знаем, что там». Если уровень страницы дочитал её и принёс форму
     # пароля или вход через мессенджер — мы знаем.
+    # Считается не «уровень страницы что-то нашёл», а «нашёл то, за
+    # что начислил балл». Поле пароля есть на КАЖДОЙ честной странице
+    # входа, и по факту его наличия потолок падал там, где он и нужен:
+    # `login.microsoftonline.com` получал 35 вместо 15.
     trusted_ceiling_applies = True
-    page_saw_something = page is not None and page.checked and bool(
-        page.cross_domain_form or page.messenger_login
-        or page.brands_in_text or page.has_password_field)
+    page_saw_something = any(sig.weight > 0 and sig.code.startswith("PAGE_")
+                             for sig in c.signals)
 
     # Правило 1: пол по внешней разведке.
     if external_hit:

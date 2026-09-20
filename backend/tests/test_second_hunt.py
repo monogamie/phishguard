@@ -239,3 +239,132 @@ def test_f16_backslash_after_scheme_goes_where_the_browser_goes(raw, host):
 def test_f15_junk_is_still_refused(url):
     with pytest.raises(Exception):
         ScanRequest(url=url)
+
+
+# ── F-07. Связка из истории проекта весит и на выдержанном домене ─
+
+MONTH_OLD = DomainAgeResult(checked=True, age_days=40, source="rdap")
+YOUNG_CT = CtResult(checked=True, first_seen_days=40, total_certs=2)
+LOGIN_PAGE = PageResult(checked=True, status_code=200, has_password_field=True,
+                        messenger_login=["telegram"], form_count=1)
+
+
+@pytest.mark.parametrize("url", [
+    "https://my-prize-club.ru/p/9",          # приманка в имени домена
+    "https://golosovanie-za-rebenka.ru/",    # схема обмана в адресе
+    "https://sberbank-login.ru/",            # чужой бренд в домене
+])
+def test_f07_password_plus_messenger_weighs_on_a_lure_domain(url):
+    """
+    Домену 40 дней — для фишинга обычное дело, мошенники их выдерживают.
+    Связка «просит пароль» + «войти через Telegram» весила ноль, хотя
+    это дословно сценарий, из-за которого проект появился.
+    """
+    codes = weighted(score(url, page=LOGIN_PAGE, age=MONTH_OLD, ct=YOUNG_CT))
+    assert "PAGE_MESSENGER_LOGIN" in codes
+    assert "PAGE_PASSWORD_FORM" in codes
+
+
+@pytest.mark.parametrize("url", [
+    "https://habr.com/ru/auth/login/",
+    "https://forum-rybakov.ru/login",
+    "https://id.rbc.ru/",
+])
+def test_f07_ordinary_login_pages_stay_quiet(url):
+    """Поле пароля и вход через соцсеть есть у половины интернета."""
+    codes = weighted(score(url, page=LOGIN_PAGE))
+    assert "PAGE_MESSENGER_LOGIN" not in codes
+    assert "PAGE_PASSWORD_FORM" not in codes
+
+
+# ── F-11. Поле пароля не снимает потолок с честных входов ────────
+
+MS_LOGIN = ("https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+            "?redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb&response_type=code")
+
+
+def test_f11_password_field_alone_keeps_the_trust_ceiling():
+    from pipeline.scorer import TRUSTED_DOMAIN_SCORE_CAP
+
+    page = PageResult(checked=True, status_code=200, has_password_field=True,
+                      form_count=1, bytes_read=9000)
+    assert score(MS_LOGIN, page=page).risk_score <= TRUSTED_DOMAIN_SCORE_CAP
+
+
+@pytest.mark.parametrize("url", [
+    "https://telegra.ph/sberbank-vhod",
+    "https://myphish.pages.dev/login",
+])
+def test_f11_phishing_on_a_platform_still_lifts_the_ceiling(url):
+    page = PageResult(checked=True, status_code=200, has_password_field=True,
+                      brands_in_text=["sberbank"], form_count=1, bytes_read=9000)
+    assert "PAGE_BRAND_MISMATCH" in weighted(score(url, page=page))
+
+
+# ── F-12. Официальный канал бренда на площадке ───────────────────
+
+@pytest.mark.parametrize("url", ["https://t.me/sberbank",
+                                 "https://telegra.ph/sberbank-novosti"])
+def test_f12_a_mention_on_a_platform_is_not_an_accusation(url):
+    """На площадке домен НИКОГДА не принадлежит бренду — там у всех
+    общий адрес. Обвинять за это значит обвинять и официальный канал."""
+    page = PageResult(checked=True, status_code=200,
+                      brands_in_text=["sberbank"], form_count=0, bytes_read=9000)
+    assert "PAGE_BRAND_MISMATCH" not in weighted(score(url, page=page))
+
+
+def test_f12_but_asking_for_data_there_is():
+    page = PageResult(checked=True, status_code=200, brands_in_text=["sberbank"],
+                      has_password_field=True, form_count=1, bytes_read=9000)
+    assert "PAGE_BRAND_MISMATCH" in weighted(score("https://t.me/sber-vhod", page=page))
+
+
+def test_f12_brand_on_an_ordinary_foreign_domain_is_still_an_accusation():
+    page = PageResult(checked=True, status_code=200,
+                      brands_in_text=["sberbank"], form_count=0, bytes_read=9000)
+    assert "PAGE_BRAND_MISMATCH" in weighted(score("https://some-site.ru/p", page=page))
+
+
+# ── F-14. Чужой бренд в домене должен доходить до «ОПАСНО» ───────
+
+@pytest.mark.parametrize("url", [
+    "https://sberbank-login.ru/", "https://gosuslugi-vhod.ru/auth",
+    "https://tinkoff-support.ru/help", "https://vk-restore.ru/",
+])
+def test_f14_brand_plus_one_lure_reaches_phishing(url):
+    """Самая сильная улика сервиса при весе 45 упиралась в жёлтое:
+    45 + 12 = 57 при пороге 60. Ни одна пара не доходила до красного."""
+    from config import settings
+
+    result = score(url, age=DomainAgeResult(checked=True, age_days=400, source="rdap"),
+                   ct=CtResult(checked=True, first_seen_days=400, total_certs=5))
+    assert result.risk_score >= settings.PHISHING_THRESHOLD, (
+        f"{url}: {result.risk_score} баллов — чужой бренд плюс слово-приманка "
+        f"должны давать «ОПАСНО»"
+    )
+
+
+@pytest.mark.parametrize("url", ["https://ozone.com/", "https://ozonoterapiya.ru/",
+                                 "https://alfa-remont.ru/", "https://госуслуги.рф/"])
+def test_f14_honest_sites_did_not_move(url):
+    assert weighted(score(url)) == {}
+
+
+# ── F-18. Три ссылки на весь телеграм ────────────────────────────
+
+@pytest.mark.parametrize("url", ["https://t.me/durov", "https://telegra.ph/test",
+                                 "https://github.com/x"])
+def test_f18_host_hit_on_a_platform_does_not_weigh(url):
+    rep = ReputationResult(checked=True, host_listed=True, host_url_count=3)
+    assert "URLHAUS_HOST" not in weighted(score(url, reputation=rep))
+
+
+@pytest.mark.parametrize("url", ["https://evil-site.top/x", "https://random-shop.ru/x"])
+def test_f18_host_hit_on_an_ordinary_domain_still_weighs(url):
+    rep = ReputationResult(checked=True, host_listed=True, host_url_count=3)
+    assert "URLHAUS_HOST" in weighted(score(url, reputation=rep))
+
+
+def test_f18_the_link_itself_in_the_database_convicts_anywhere():
+    rep = ReputationResult(checked=True, url_listed=True, threat="malware")
+    assert "URLHAUS_URL" in weighted(score("https://t.me/malware-drop", reputation=rep))

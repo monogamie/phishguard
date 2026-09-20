@@ -216,3 +216,68 @@ def test_main_reason_order_names_real_signals(html):
     real = set(re.findall(r"c\.(?:add|ok)\(\s*\"([A-Z_0-9]+)\"", scorer))
     unknown = [code for code in listed if code not in real]
     assert not unknown, f"таких признаков скорер не выдаёт: {unknown}"
+
+
+# ── Аварийные стили: страница без Tailwind ───────────────────────
+# Tailwind грузится с CDN и может не загрузиться. Мобильный слой от
+# него отвязан, настольный — нет, и страница становилась нечитаемой:
+# чёрный текст на чёрном фоне, кольцо балла во весь экран, скрытые
+# блоки показывались пустыми.
+
+@pytest.mark.parametrize("page", ["index.html", "api.html"])
+def test_body_has_its_own_text_colour(page):
+    """Цвет текста задаёт класс Tailwind. Без него текст чёрный, а
+    фон свой и остаётся тёмным, — читать нечем."""
+    text = (FRONTEND.parent / page).read_text(encoding="utf-8")
+    style = text[text.index("<style>"):text.index("</style>")]
+    assert re.search(r"body\s*\{[^}]*\bcolor\s*:", style), (
+        f"{page}: у body нет своего цвета текста — "
+        f"без Tailwind страница станет чёрным по чёрному"
+    )
+
+
+@pytest.mark.parametrize("page", ["index.html", "api.html"])
+def test_hidden_is_never_declared_globally(page):
+    """
+    Правило `.hidden` вне медиазапроса однажды перебило у Tailwind
+    класс `md:flex` и унесло с настольной страницы меню и
+    переключатель языка. Жило так сутки.
+
+    Скрывать можно поимённо (`#id.hidden`) или внутри медиазапроса
+    мобильного слоя — но не классом на весь документ.
+    """
+    text = (FRONTEND.parent / page).read_text(encoding="utf-8")
+    style = text[text.index("<style>"):text.index("</style>")]
+    # Выкидываем содержимое медиазапросов: там `.hidden` разрешён.
+    without_media = re.sub(r"@media[^{]*\{(?:[^{}]|\{[^{}]*\})*\}", "", style)
+    bare = re.findall(r"(?m)^\s*\.hidden\b[^{]*\{", without_media)
+    assert not bare, (
+        f"{page}: `.hidden` объявлен глобально — он перебьёт у Tailwind "
+        f"классы вида `md:flex`"
+    )
+
+
+def test_every_desktop_hidden_block_is_covered(html):
+    """
+    Блок с голым `class="hidden"` без Tailwind показывается пустым
+    прямоугольником. Новый такой блок должен получить строчку в
+    аварийном CSS — иначе он протечёт.
+    """
+    desktop = html[:html.index('<div id="mobileApp">')]
+    style = html[html.index("<style>"):html.index("</style>")]
+
+    leaking = []
+    for tag in re.findall(r"<[a-z]+[^>]*>", desktop):
+        klass = re.search(r'class="([^"]*)"', tag)
+        ident = re.search(r'id="([^"]*)"', tag)
+        if not (klass and ident):
+            continue
+        if not re.search(r"(^|\s)hidden(\s|$)", klass.group(1)):
+            continue
+        if f"#{ident.group(1)}.hidden" not in style:
+            leaking.append(ident.group(1))
+
+    assert not leaking, (
+        "без Tailwind покажутся пустыми: " + ", ".join(leaking) +
+        " — добавь их в аварийный CSS рядом с #loadingBar.hidden"
+    )
