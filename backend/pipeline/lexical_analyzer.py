@@ -19,6 +19,7 @@ from data.brands import (
     MULTI_TENANT_DOMAINS,
     MULTI_TENANT_HOSTS,
     SHORT_ALIAS_MAX_LEN,
+    AMBIGUOUS_ALIASES,
     MIN_SUBSTRING_BRAND_LEN,
     TRUSTED_DOMAINS,
 )
@@ -30,6 +31,7 @@ from normalize import (
     to_ascii_host,
     fold_homoglyphs,
     has_non_ascii,
+    is_ip_host,
     levenshtein,
     mixed_scripts,
     scripts_of,
@@ -178,7 +180,12 @@ _SCAM_PATTERNS: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
                 "malysh", "malysha", "detsad", "shkola", "grant",
                 "risunok", "talant", "kid", "kids", "child", "children",
                 "baby", "дети", "детей", "деток", "ребенок", "ребенка",
-                "ребёнка", "малыш", "малыша"})),
+                "ребёнка", "малыш", "малыша",
+                # Кириллица наравне с транслитом: русскоязычная жертва
+                # получает ссылку и в том, и в другом написании, а
+                # ловился до 20 сентября только транслит.
+                "детск", "детсад", "детск", "школа", "рисунок",
+                "талант", "грант", "малышей", "ребят", "ребятам"})),
     # «Вам положена выплата / возврат налога / компенсация»
     ("fake_payout",
      frozenset({"vyplata", "vyplaty", "vozvrat", "kompensaciya",
@@ -254,6 +261,21 @@ def _match_scam_pattern(text: str) -> Optional[str]:
         if group_a.search(lowered) and group_b.search(lowered):
             return code
     return None
+
+
+def _needs_a_lure(name: str, name_parts: set[str], zone_is_cheap: bool) -> bool:
+    """
+    True, если это написание бренда совпадает с обычным словом и рядом
+    в имени домена нет приманки.
+
+    «Альфа», «ВК», «почта» — ещё и название любой конторы:
+    `alfa-remont.ru` — ремонтная мастерская, а не банк. Улика не само
+    слово, а соседство: `sber-vhod`, `ozon-bonus`, `wb-vyplata`.
+    """
+    if name not in AMBIGUOUS_ALIASES or zone_is_cheap:
+        return False
+    rest = name_parts - {name}
+    return not any(part in _TRIGGER_KEYWORDS_ALL for part in rest)
 
 
 class LexicalAnalyzer:
@@ -355,7 +377,7 @@ class LexicalAnalyzer:
         is_trusted = trust_domain in TRUSTED_DOMAINS
 
         keywords = self._find_keywords(path_and_query, decoded_host, is_trusted)
-        is_ip = self._is_ip_host(host)
+        is_ip = is_ip_host(host)
         brand = self._match_brand(host, decoded_host, sld,
                                   registered_domain, subdomains, suffix)
 
@@ -394,7 +416,7 @@ class LexicalAnalyzer:
             domain_length         = len(sld_human),
             hyphen_count          = decoded_host.count("-"),
             trigger_keywords      = keywords,
-            keywords_in_host      = self._keywords_in_host(sld_human, is_trusted),
+            keywords_in_host      = self._keywords_in_host(sld_human, subdomains, is_trusted),
             scam_pattern          = (None if is_trusted else
                                      _match_scam_pattern(
                                          f"{path_and_query} {decoded_host}")),
@@ -450,69 +472,6 @@ class LexicalAnalyzer:
             return without_scheme.split("/")[0]
 
     @staticmethod
-    def _is_ip_host(host: str) -> bool:
-        """
-        True, если хост — это IP-адрес в любой записи.
-
-        Обычную точечную запись знает сам `ipaddress`. Но браузеры
-        понимают ещё три, и мошенники ими пользуются именно затем,
-        чтобы адрес не выглядел адресом:
-
-            http://3232235777/   — десятичная
-            http://0xC0A80001/   — шестнадцатеричная
-            http://0177.0.0.1/   — восьмеричная
-
-        Все три ведут на 192.168.0.1 или 127.0.0.1. Пока признак их не
-        видел, такая ссылка проходила как обычный домен.
-        """
-        if not host:
-            return False
-        bare = host.strip("[]")
-        try:
-            ipaddress.ip_address(bare)
-            return True
-        except ValueError:
-            pass
-
-        # Одно число целиком: десятичное или шестнадцатеричное.
-        try:
-            if re.fullmatch(r"0[xX][0-9a-fA-F]+", bare):
-                value = int(bare, 16)
-            elif bare.isdigit():
-                value = int(bare, 10)
-            else:
-                value = None
-            if value is not None and 0 <= value <= 0xFFFFFFFF:
-                return True
-        except ValueError:
-            pass
-
-        # Точечная запись, где хотя бы одна часть не десятичная:
-        # `0177.0.0.1`, `0x7f.0.0.1`. Диапазоны проверяем так же, как
-        # это делает сеть: последняя часть добирает остаток адреса,
-        # а `999.999.999.999` не адрес ни в какой записи.
-        parts = bare.split(".")
-        if not 2 <= len(parts) <= 4 or not all(parts):
-            return False
-        values = []
-        for part in parts:
-            try:
-                if re.fullmatch(r"0[xX][0-9a-fA-F]+", part):
-                    values.append(int(part, 16))
-                elif re.fullmatch(r"0[0-7]+", part):
-                    values.append(int(part, 8))
-                elif part.isdigit():
-                    values.append(int(part, 10))
-                else:
-                    return False
-            except ValueError:
-                return False
-        if any(v < 0 or v > 0xFF for v in values[:-1]):
-            return False
-        tail_bits = 8 * (5 - len(parts))
-        return 0 <= values[-1] < (1 << tail_bits)
-
-    @staticmethod
     def _has_mixed_scripts(host: str) -> bool:
         """Смешение алфавитов внутри одной метки хоста."""
         return any(mixed_scripts(label) for label in host.split("."))
@@ -562,9 +521,11 @@ class LexicalAnalyzer:
         return sorted(found)
 
     @staticmethod
-    def _keywords_in_host(sld: str, is_trusted: bool) -> bool:
+    def _keywords_in_host(sld: str, subdomains: list[str],
+                          is_trusted: bool) -> bool:
         """
-        Стоят ли слова-маркеры в САМОМ ИМЕНИ домена.
+        Стоят ли слова-маркеры в САМОМ ИМЕНИ сайта — в том, что жертва
+        читает в адресной строке.
 
         Разница принципиальная. `secure-login-verify.top` — так
         мошенник называет свой домен, чтобы он выглядел служебным.
@@ -573,13 +534,23 @@ class LexicalAnalyzer:
         странице входа. Пока и то и другое весило одинаково, честные
         личные кабинеты набирали на «ПОДОЗРИТЕЛЬНО».
 
-        Смотрим только РЕГИСТРИРУЕМОЕ имя, без поддоменов: `id.rbc.ru`,
-        `lk.megafon.ru`, `cabinet.tele2.ru` — это как раз честные сайты,
-        и поддомен «id» им не в упрёк.
+        Поддомен — это тоже имя, которое видно. Но один короткий
+        служебный поддомен и подставная простыня — разные вещи:
+        `id.rbc.ru` и `cabinet.tele2.ru` честные, а
+        `update-billing.suspended-account.mydomain.ru` на телефоне
+        читается как сайт «update-billing», потому что хвост не влезает.
+        Отличаем по форме: одиночная служебная метка не в счёт,
+        метка-фраза через дефис и несколько тревожных меток подряд — в счёт.
         """
         if is_trusted:
             return False
-        return bool(_KEYWORD_RE.search(sld))
+        if _KEYWORD_RE.search(sld):
+            return True
+
+        labels = [s for s in subdomains if s != "www"]
+        if any("-" in label and _KEYWORD_RE.search(label) for label in labels):
+            return True
+        return sum(1 for label in labels if _KEYWORD_RE.search(label)) >= 2
 
     @staticmethod
     def _match_brand(host: str, decoded_host: str, sld: str,
@@ -660,7 +631,8 @@ class LexicalAnalyzer:
             # Сравниваем ИСХОДНОЕ имя, а не свёрнутое: `paypa1` после
             # свёртки leet-символов тоже даёт «paypal», и по свёрнутому
             # оговорка накрыла бы настоящие опечаточные домены.
-            if sld == brand and not zone_is_cheap:
+            own_names = {brand} | set(BRAND_ALIASES.get(brand, ()))
+            if (sld in own_names or human_name in own_names) and not zone_is_cheap:
                 continue
 
             # Гомоглиф: после свёртки вышел бренд, а хост был не-ASCII.
@@ -705,17 +677,22 @@ class LexicalAnalyzer:
             # `ozone.com` нет.
             for alias in BRAND_ALIASES.get(brand, ()):
                 if len(alias) <= SHORT_ALIAS_MAX_LEN:
-                    if alias in name_parts:
-                        return BrandMatch(
-                            brand=brand, kind="impersonation",
-                            evidence=f"«{alias}» в чужом домене {human_name}")
-                elif alias in human_name:
-                    return BrandMatch(
-                        brand=brand, kind="impersonation",
-                        evidence=f"«{alias}» в чужом домене {human_name}")
+                    if alias not in name_parts:
+                        continue
+                elif alias not in human_name:
+                    continue
+
+                if _needs_a_lure(alias, name_parts, zone_is_cheap):
+                    continue
+
+                return BrandMatch(
+                    brand=brand, kind="impersonation",
+                    evidence=f"«{alias}» в чужом домене {human_name}")
 
             # 4. Подстрока — только для длинных имён: «vtb» даёт шум.
             if len(brand) >= MIN_SUBSTRING_BRAND_LEN:
+                if _needs_a_lure(brand, name_parts, zone_is_cheap):
+                    continue
                 if brand in canon_sld or brand in folded_host:
                     return BrandMatch(
                         brand=brand,
