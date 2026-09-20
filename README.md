@@ -311,7 +311,7 @@ phishguard/
 │   │   ├── domain_age.py      Уровень 2:  RDAP + WHOIS
 │   │   ├── lexical_analyzer.py Уровень 3: структура URL
 │   │   └── scorer.py          Уровень 4:  агрегация
-│   └── tests/              209 тестов
+│   └── tests/              488 тестов
 └── ARCHITECTURE.md         Разбор исправленных дефектов
 ```
 
@@ -339,7 +339,7 @@ curl -X POST http://localhost:8000/scan \
     {
       "code": "BRAND_IMPERSONATION",  // машиночитаемый код
       "severity": "danger",           // ok | info | warn | danger
-      "weight": 45,                   // вклад в балл
+      "weight": 55,                   // вклад в балл
       "title": "Чужой бренд в домене",
       "detail": "Имя «paypal» использовано в домене, который бренду не принадлежит"
     }
@@ -404,7 +404,7 @@ pip install -r requirements-dev.txt
 python3 -m pytest -q
 ```
 
-209 тестов, сеть в них полностью заглушена — проверяется наша логика, а не
+488 тестов, сеть в них полностью заглушена — проверяется наша логика, а не
 доступность Google. Покрыто:
 
 - `test_normalize.py` — punycode, гомоглифы, leet, Левенштейн;
