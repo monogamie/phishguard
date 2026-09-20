@@ -207,7 +207,7 @@ node -e "const {chromium}=require('playwright');(async()=>{
 ## Где мы остановились (19 сентября 2026)
 
 **Всё влито в main.** Ветка `claude/focused-archimedes-fk3jyz` совпадает
-с main. **Тестов 385**, прогон: `cd backend && python3 -m pytest -q`.
+с main. **Тестов 488**, прогон: `cd backend && python3 -m pytest -q`.
 
 ### Что сделано 19 сентября
 
