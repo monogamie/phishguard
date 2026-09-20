@@ -20,6 +20,19 @@
         .lang-toggle{display:flex;align-items:center;border:1px solid rgba(16,185,129,.3);border-radius:6px;overflow:hidden;}
         .lang-btn{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;padding:4px 9px;cursor:pointer;transition:all .2s;background:transparent;color:#475569;border:none;}
         .lang-btn.active{background:rgba(16,185,129,.2);color:#10b981;}
+        /* Аварийные стили: Tailwind грузится с CDN и может не
+           загрузиться — тогда текст становится чёрным на чёрном.
+           Повторяют то, что даёт Tailwind, поэтому при загруженном
+           CDN ничего не меняют. Глобального `.hidden` здесь нет
+           намеренно: он однажды перебил `md:flex` и унёс меню. */
+        *, *::before, *::after { box-sizing: border-box; }
+        body { color: #cbd5e1; }
+        nav { display:flex; justify-content:space-between; align-items:center;
+              gap:16px; max-width:80rem; margin:0 auto; }
+        nav img { width:44px; height:44px; border-radius:9999px; object-fit:cover; }
+        main { max-width:56rem; margin:0 auto; }
+        @media (min-width: 768px) { #menuBtn { display:none; } }
+
         nav{position:relative;z-index:100;}
         #mobileMenu{display:none;flex-direction:column;position:absolute;top:100%;left:0;right:0;z-index:200;background:rgba(30,35,45,0.97);backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,.05);}
         #mobileMenu.open{display:flex;}

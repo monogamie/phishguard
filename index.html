@@ -83,6 +83,63 @@
            поэтому её правки сюда не протекают. */
         #mobileApp { display:none; }
 
+        /* ── Аварийные стили настольной версии ───────────────────
+           Tailwind грузится с CDN и может не загрузиться. Тогда
+           настольная страница становится НЕЧИТАЕМОЙ: чёрный текст на
+           чёрном фоне, кольцо с баллом растягивается на весь экран,
+           скрытые блоки показываются пустыми. Мобильный слой от CDN
+           отвязали 18 сентября, настольный остался.
+
+           Каждое правило повторяет то, что даёт Tailwind, поэтому при
+           загруженном CDN оно ничего не меняет.
+
+           Глобального `.hidden` здесь НЕТ и быть не должно: однажды он
+           перебил у Tailwind класс `md:flex` и унёс с шапки меню и
+           переключатель языка. Скрываем поимённо, селектором с id —
+           он сильнее любого класса, но действует только пока класс
+           `.hidden` на элементе висит. ── */
+        *, *::before, *::after { box-sizing: border-box; }
+        body { color: #cbd5e1; }                       /* = text-slate-300 */
+        nav { display:flex; justify-content:space-between; align-items:center;
+              gap:16px; max-width:80rem; margin:0 auto; }
+        nav img { width:44px; height:44px; border-radius:9999px; object-fit:cover; }
+        main { max-width:56rem; margin:0 auto; }
+
+        #urlInput { background:transparent; border:none; color:#34d399;
+                    width:100%; min-width:0; outline:none; }
+        #scanBtn { background:#10b981; color:#020617; border:none;
+                   font-weight:700; border-radius:12px; cursor:pointer;
+                   white-space:nowrap; }
+        #scanBtn:disabled { opacity:.5; cursor:not-allowed; }
+
+        /* Кольцо балла: у svg задан только viewBox, без width/height он
+           растягивается на всю ширину родителя — 1262×1262 пикселя,
+           и слово «ОПАСНО» уезжало на полтора экрана вниз. */
+        #verdictCard { display:flex; align-items:center; gap:24px; }
+        #verdictCard .pg-ring { position:relative; flex-shrink:0;
+                                width:80px; height:80px; }
+        #verdictCard .pg-ring svg { position:absolute; top:0; left:0;
+                                    width:80px; height:80px;
+                                    transform:rotate(-90deg); }
+        #scoreNum { position:relative; z-index:1; display:flex;
+                    align-items:center; justify-content:center;
+                    width:80px; height:80px; color:#fff; font-weight:800; }
+
+        /* Цвет вердикта ставится классом Tailwind — без него он чёрный
+           на чёрном. Те же значения, только своими классами. */
+        .pg-safe { color:#4ade80; }
+        .pg-suspicious { color:#fbbf24; }
+        .pg-danger { color:#f87171; }
+        .pg-unverified { color:#cbd5e1; }
+
+        #loadingBar.hidden, #errorMsg.hidden, #redirectCard.hidden,
+        #rawDetails.hidden, #deskHistory.hidden, #sampleTags.hidden,
+        #engineTags.hidden { display:none; }
+
+        /* Бургер — единственный элемент, который БЕЗ Tailwind
+           появляется там, где не должен. Порог тот же, что у `md:`. */
+        @media (min-width: 768px) { #menuBtn { display:none; } }
+
         @media (max-width: 640px) {
             /* Своё определение .hidden — на случай, если Tailwind с CDN
                не загрузился: без него скрытые блоки показывались пустыми.
@@ -296,7 +353,7 @@
 
     <div id="resultPanel" class="mt-10 text-left space-y-4" aria-live="polite">
         <div id="verdictCard" class="glass rounded-3xl p-6 flex items-center gap-6">
-            <div class="relative flex-shrink-0 w-20 h-20 flex items-center justify-center">
+            <div class="pg-ring relative flex-shrink-0 w-20 h-20 flex items-center justify-center">
                 <svg class="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 80 80" aria-hidden="true">
                     <circle cx="40" cy="40" r="34" stroke="#1e293b" stroke-width="5" fill="none"/>
                     <circle id="scoreCircle" cx="40" cy="40" r="34" stroke="#38bdf8" stroke-width="5" fill="none" stroke-dasharray="213.6" stroke-dashoffset="213.6" stroke-linecap="round"/>
@@ -579,7 +636,7 @@ const W = {
     encoded_host: 25, insecure_scheme: 15, shortener: 10,
     trigger_keywords: 12, trigger_keywords_many: 22, suspicious_tld: 20,
     abused_tld: 10, scam_pattern: 35,
-    digits_in_domain: 10, brand_impersonation: 45, brand_typosquat: 50,
+    digits_in_domain: 10, brand_impersonation: 55, brand_typosquat: 55,
     brand_homograph: 60, domain_age_unknown: 5,
 };
 const TRUSTED_SCORE_CAP = 15;
@@ -1246,7 +1303,8 @@ const KEYWORDS = ['login','signin','logon','secure','security','verify','verific
     'validate','account','update','confirm','banking','bank','recover','recovery',
     'password','passwd','credential','wallet','prize','winner','bonus','gift',
     'suspended','limited','unusual','activity','authenticate','authorize',
-    'reactivate','unlock','billing','invoice','payment','refund','webscr','token','otp'];
+    'reactivate','unlock','billing','invoice','payment','refund','webscr','token','otp',
+    'restore','reset','deactivate','expired'];
 
 // Русские слова латиницей и кириллицей. Список был чисто английским —
 // и это дыра размером с рунет: сайт для русскоязычной жертвы пишет
@@ -1260,8 +1318,10 @@ const KEYWORDS_RU = ['golos','golosovanie','golosovat','golosuy','vote','voting'
     'perevod','oplata','karta','koshelek','schet','dengi',
     'podtverdit','podtverzhdenie','proverka','vhod','voyti','avtorizaciya',
     'blokirovka','zablokirovan','srochno',
+    'vosstanovit','vosstanovlenie','vosstanovis','dostup',
     'голос','голосование','конкурс','дети','ребенок','приз','подарок',
-    'выплата','возврат','бонус','вход','подтвердить'];
+    'выплата','возврат','бонус','вход','подтвердить',
+    'восстановить','восстановление','доступ'];
 
 /*
    Готовые схемы мошенничества.
@@ -2017,7 +2077,8 @@ function renderResult(result) {
         'glass rounded-3xl p-6 flex items-center gap-6 border ' + BORDER_CLS[result.level];
 
     const label = $('verdictLabel');
-    label.className = 'text-lg md:text-2xl font-extrabold tracking-wide break-words ' + TEXT_CLS[result.level];
+    label.className = 'text-lg md:text-2xl font-extrabold tracking-wide break-words '
+                    + TEXT_CLS[result.level] + ' pg-' + result.level;
     label.textContent = result.verdict;
     $('verdictUrl').textContent = result.host;
 

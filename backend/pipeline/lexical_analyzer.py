@@ -65,6 +65,9 @@ _TRIGGER_KEYWORDS: frozenset[str] = frozenset({
     "authorize", "authorization", "reactivate", "unlock", "billing",
     "invoice", "payment", "refund", "webscr", "cmd", "session",
     "token", "otp", "2fa", "id", "customer", "client", "support",
+    # «Восстановить доступ» — штатное начало угона, а в списке этих
+    # слов не было вовсе: `vk-restore.ru` проходил как честная фирма.
+    "restore", "reset", "deactivate", "expired",
 })
 
 # Русские слова: сайт для русскоязычной жертвы пишет `golosovanie`
@@ -83,9 +86,11 @@ _TRIGGER_KEYWORDS_RU: frozenset[str] = frozenset({
     # давление и «подтверди себя»
     "podtverdit", "podtverzhdenie", "proverka", "vhod", "voyti",
     "avtorizaciya", "blokirovka", "zablokirovan", "srochno",
+    "vosstanovit", "vosstanovlenie", "vosstanovis", "dostup",
     # кириллица напрямую — некоторые сайты не транслитерируют
     "голос", "голосование", "конкурс", "дети", "ребенок", "приз",
     "подарок", "выплата", "возврат", "бонус", "вход", "подтвердить",
+    "восстановить", "восстановление", "доступ",
 })
 
 _TRIGGER_KEYWORDS_ALL = _TRIGGER_KEYWORDS | _TRIGGER_KEYWORDS_RU
