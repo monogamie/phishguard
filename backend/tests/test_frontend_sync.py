@@ -281,3 +281,44 @@ def test_every_desktop_hidden_block_is_covered(html):
         "без Tailwind покажутся пустыми: " + ", ".join(leaking) +
         " — добавь их в аварийный CSS рядом с #loadingBar.hidden"
     )
+
+
+# ── Этапы проверки: имена с сервера, подписи на странице ─────────
+
+def test_every_pipeline_stage_has_a_label(html):
+    """
+    Сервер шлёт имя этапа, страница показывает подпись к нему. Новый
+    уровень без подписи — это `domain_age` вместо «узнаю возраст
+    домена» прямо на экране ожидания, в обоих языках.
+    """
+    from main import PIPELINE_STAGES
+
+    for lang, section in _lang_sections(html, "const I18N = {").items():
+        compact = section.replace(" ", "")
+        missing = [s for s in PIPELINE_STAGES if f"stage_{s}:" not in compact]
+        assert not missing, (
+            f"нет подписи этапа на языке «{lang}»: " + ", ".join(missing)
+        )
+
+
+def test_stage_order_matches_the_server(html):
+    """Порядок этапов на странице — копия серверного. Разъедется —
+    подпись начнёт отставать от того, что реально идёт."""
+    from main import PIPELINE_STAGES
+
+    block = _js_block(html, "const STAGE_ORDER = [", "];")
+    listed = re.findall(r"'([a-z_]+)'", block)
+    assert listed == list(PIPELINE_STAGES), (
+        f"на странице {listed}, в питоне {list(PIPELINE_STAGES)}"
+    )
+
+
+def test_every_stage_maps_to_a_mobile_step(html):
+    """Телефонный экран показывает четыре шага, а уровней десять.
+    Уровень без шага — замершая полоска."""
+    from main import PIPELINE_STAGES
+
+    block = _js_block(html, "const STAGE_TO_MOBILE_STEP = {", "};")
+    mapped = dict(re.findall(r"([a-z_]+)\s*:\s*(\d)", block))
+    missing = [s for s in PIPELINE_STAGES if s not in mapped]
+    assert not missing, "нет шага для уровней: " + ", ".join(missing)

@@ -675,6 +675,16 @@ const I18N = {
         step_waking:'Сервер просыпается, это займёт до минуты...',
         step_waking2:'Ещё чуть-чуть, почти готово...',
         step_done:'Готово',
+        stage_redirects:'Иду по ссылке до конца...',
+        stage_lexical:'Разбираю адрес...',
+        stage_gsb:'Спрашиваю базу Google...',
+        stage_urlhaus:'Спрашиваю базу вредоносных ссылок...',
+        stage_domain_age:'Узнаю возраст домена...',
+        stage_ai:'Спрашиваю языковую модель...',
+        stage_tls:'Смотрю сертификат...',
+        stage_ct:'Листаю журналы сертификатов...',
+        stage_page:'Читаю саму страницу...',
+        stage_score:'Складываю улики...',
         v_safe:'БЕЗОПАСНО', v_susp:'ПОДОЗРИТЕЛЬНО', v_danger:'ОПАСНО',
         v_unknown:'НЕ ПРОВЕРЕНО',
         unverified_title:'Проверка не завершена',
@@ -744,6 +754,16 @@ const I18N = {
         step_waking:'Waking the server, this can take a minute...',
         step_waking2:'Almost there...',
         step_done:'Done',
+        stage_redirects:'Following the link to its end...',
+        stage_lexical:'Parsing the address...',
+        stage_gsb:'Asking Google Safe Browsing...',
+        stage_urlhaus:'Asking the malware URL database...',
+        stage_domain_age:'Looking up the domain age...',
+        stage_ai:'Asking the language model...',
+        stage_tls:'Inspecting the certificate...',
+        stage_ct:'Reading certificate logs...',
+        stage_page:'Reading the page itself...',
+        stage_score:'Weighing the evidence...',
         v_safe:'SAFE', v_susp:'SUSPICIOUS', v_danger:'DANGER',
         v_unknown:'NOT VERIFIED',
         unverified_title:'Check incomplete',
@@ -1820,6 +1840,116 @@ async function fetchWithTimeout(url, options, ms) {
     }
 }
 
+// Порядок этапов повторяет PIPELINE_STAGES в backend/main.py. Нужен
+// он только для подписи и процентов: сам прогресс считает сервер.
+const STAGE_ORDER = ['redirects','lexical','gsb','urlhaus','domain_age',
+                     'ai','tls','ct','page','score'];
+
+// Какой из четырёх шагов телефонного экрана закрывает этот уровень.
+const STAGE_TO_MOBILE_STEP = {
+    redirects:0, lexical:0,
+    gsb:1, urlhaus:1,
+    domain_age:2, tls:2, ct:2,
+    ai:3, page:3, score:3,
+};
+
+function stageLabel(name) {
+    return t()['stage_' + name] || name;
+}
+
+function makeStageTracker() {
+    // Уровни заканчиваются вразнобой — какой первым ответил, о таком
+    // и доложат. Показывать последний закрытый значит дёргать человека
+    // назад по списку. Показываем первый ЕЩЁ ИДУЩИЙ: это так же
+    // правда, но читается как движение вперёд.
+    const finished = new Set();
+    return function (stage) {
+        if (stage) finished.add(stage);
+        const running = STAGE_ORDER.find(name => !finished.has(name));
+        return {
+            stage: running || STAGE_ORDER[STAGE_ORDER.length - 1],
+            done: finished.size,
+            total: STAGE_ORDER.length,
+        };
+    };
+}
+
+async function scanViaBackendStreaming(url, onStage) {
+    // Поток поверх POST, а не EventSource: тому нужен GET, то есть
+    // проверяемый адрес уехал бы в строку запроса и в логи прокси.
+    const resp = await fetchWithTimeout(BACKEND_URL + '/scan/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+        body: JSON.stringify({ url }),
+    }, BACKEND_TIMEOUT_MS);
+
+    if (resp.status === 404) throw new Error('NO_STREAM');
+    if (resp.status === 429) {
+        throw new Error('RATE_LIMIT:' + (resp.headers.get('Retry-After') || '60'));
+    }
+    if (resp.status === 422) {
+        let detail = '';
+        try { detail = (await resp.json()).detail || ''; } catch (e) {}
+        throw new Error('REJECTED:' + detail);
+    }
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    if (!resp.body || !resp.body.getReader) throw new Error('NO_STREAM');
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let result = null;
+
+    while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+
+        // События разделяются пустой строкой; хвост буфера может быть
+        // половиной события — дочитываем его следующей порцией.
+        let split;
+        while ((split = buffer.indexOf('\n\n')) !== -1) {
+            const raw = buffer.slice(0, split).trim();
+            buffer = buffer.slice(split + 2);
+            if (!raw.startsWith('data:')) continue;
+
+            let ev;
+            try { ev = JSON.parse(raw.slice(5).trim()); } catch (e) { continue; }
+
+            if (ev.event === 'stage' && onStage) {
+                onStage(ev.name, ev.done, ev.total);
+            } else if (ev.event === 'start' && onStage) {
+                onStage(null, 0, (ev.stages || STAGE_ORDER).length);
+            } else if (ev.event === 'error') {
+                throw new Error('HTTP ' + ev.status + (ev.detail ? ': ' + ev.detail : ''));
+            } else if (ev.event === 'done') {
+                result = ev.result;
+            }
+        }
+    }
+
+    // Поток кончился без результата — обрыв связи на полпути. Считать
+    // это успехом нельзя: «не смогли проверить» ≠ «безопасно».
+    if (!result) throw new Error('STREAM_TRUNCATED');
+    return backendToResult(result);
+}
+
+async function scanWithProgress(url, onStage) {
+    // Поток — основной путь. Если его нет (старый сервер, прокси
+    // режет text/event-stream, браузер без ReadableStream) — тихо
+    // уходим на обычный /scan: человеку важен вердикт, а не способ
+    // его доставки. Ответы, которые сервер ДАЛ, вроде отказа или
+    // лимита, сюда не попадают — они значат, что связь в порядке.
+    try {
+        return await scanViaBackendStreaming(url, onStage);
+    } catch (err) {
+        const msg = String(err && err.message || err);
+        if (msg.startsWith('REJECTED:') || msg.startsWith('RATE_LIMIT:')) throw err;
+        console.warn('Поток прогресса недоступен, иду обычным путём:', msg);
+    }
+    return await scanViaBackend(url);
+}
+
 async function scanViaBackend(url) {
     const resp = await fetchWithTimeout(BACKEND_URL + '/scan', {
         method: 'POST',
@@ -2184,13 +2314,23 @@ async function startScan() {
     // ждёт пробуждения контейнера. Без объяснения это выглядит как
     // зависший сайт, и человек уходит.
     const wakingTimers = [
-        setTimeout(() => setProgress(65, T.step_waking), 6000),
-        setTimeout(() => setProgress(85, T.step_waking2), 25000),
+        setTimeout(() => setProgress(8, T.step_waking), 6000),
+        setTimeout(() => setProgress(10, T.step_waking2), 25000),
     ];
+    // Первое событие потока — доказательство, что сервер проснулся.
+    // С этого момента «сервер просыпается» было бы враньём.
+    const serverIsAwake = () => wakingTimers.forEach(clearTimeout);
+
     try {
-        setProgress(20, T.step_connect);
-        setProgress(55, T.step_analyze);
-        result = await scanViaBackend(normalized);
+        setProgress(5, T.step_connect);
+        const track = makeStageTracker();
+        result = await scanWithProgress(normalized, stage => {
+            serverIsAwake();
+            const at = track(stage);
+            // 10 % отдано подключению, остальное — настоящим этапам.
+            setProgress(10 + Math.round(at.done / at.total * 85),
+                        stageLabel(at.stage));
+        });
         setProgress(100, T.step_done);
     } catch (err) {
         wakingTimers.forEach(clearTimeout);
@@ -2621,23 +2761,25 @@ async function mStartScan() {
     mSetStep(0);
     mGo('mProgressScreen');
 
-    // Шаги показываются по времени, а не по событиям: сервер делает все
-    // проверки разом и отвечает один раз, сообщать о ходе он не умеет.
-    // Поэтому последний шаг НЕ закрывается сам — он ждёт настоящего
-    // ответа, и полоска не добегает до конца раньше него. Если сервер
-    // спит (бесплатный Render просыпается до минуты), об этом честно
-    // пишем вместо молчаливого ожидания.
+    // Шаги двигает сервер, а не таймер: он докладывает о каждом
+    // закрытом уровне. Таймеры остались только на холодный старт —
+    // пока сервер спит, доложить о себе некому.
     const timers = [
-        setTimeout(() => mSetStep(1), 700),
-        setTimeout(() => mSetStep(2), 1600),
-        setTimeout(() => mSetStep(3), 2800),
         setTimeout(() => { $('mWorkSub').textContent = T.step_waking; }, 6000),
         setTimeout(() => { $('mWorkSub').textContent = T.step_waking2; }, 25000),
     ];
 
     let result = null;
     try {
-        result = await scanViaBackend(normalized);
+        const track = makeStageTracker();
+        result = await scanWithProgress(normalized, stage => {
+            // Первое же событие значит, что сервер проснулся.
+            timers.forEach(clearTimeout);
+            const at = track(stage);
+            $('mWorkSub').textContent = stageLabel(at.stage);
+            const step = STAGE_TO_MOBILE_STEP[at.stage];
+            if (step !== undefined) mSetStep(step);
+        });
     } catch (err) {
         const msg = String(err && err.message || err);
         if (msg.startsWith('REJECTED:')) {

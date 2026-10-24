@@ -7,14 +7,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from typing import Awaitable, Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from cache import TTLCache
 from config import settings
@@ -185,7 +187,39 @@ async def _skip(model_cls):
                      error="Пропущено: доверенный домен")
 
 
-async def _run_pipeline(original_url: str) -> ScanResponse:
+# Порядок — как человек их видит на экране ожидания. Имена уходят
+# в поток прогресса; подписи к ним живут во фронтенде, в обоих языках.
+PIPELINE_STAGES = ("redirects", "lexical", "gsb", "urlhaus",
+                   "domain_age", "ai", "tls", "ct", "page", "score")
+
+# Докладчик о ходе проверки. Необязателен нарочно: обычный /scan
+# передаёт None и работает ровно как раньше. Второго пути исполнения
+# у нас быть не должно — ровно на этом мы горели с двумя движками
+# подсчёта, которые разъехались.
+ProgressReporter = Optional[Callable[[str], Awaitable[None]]]
+
+
+async def _report(progress: ProgressReporter, stage: str) -> None:
+    if progress is None:
+        return
+    try:
+        await progress(stage)
+    except Exception:                                  # noqa: BLE001
+        # Оборвался читатель потока — это не повод ронять проверку:
+        # результат ещё пригодится кешу и следующему запросу.
+        logger.debug("Progress reporter failed on stage %s", stage)
+
+
+async def _staged(stage: str, coro, progress: ProgressReporter):
+    """Ждёт уровень и докладывает о нём, чем бы он ни кончился."""
+    try:
+        return await coro
+    finally:
+        await _report(progress, stage)
+
+
+async def _run_pipeline(original_url: str,
+                        progress: ProgressReporter = None) -> ScanResponse:
     """Прогоняет URL через все уровни. Каждый уровень деградирует
     сам и возвращает checked=False — ошибки здесь не ловятся."""
     started = time.perf_counter()
@@ -193,9 +227,11 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
     # ── Уровень 0: разворачиваем редиректы ───────────────────────
     redirects = await resolve_final_url(original_url)
     scanned_url = redirects.final_url or original_url
+    await _report(progress, "redirects")
 
     # ── Уровень 3 первым: он мгновенный и даёт хост для остальных ─
     lexical = lexical_analyzer.analyze(scanned_url)
+    await _report(progress, "lexical")
 
     # ── Уровни 1, 1b, 1c, 2 — параллельно ────────────────────────
     # Уровень AI идёт в этом же gather, а не после: ему нужны только
@@ -214,13 +250,15 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
     heavy = lexical.on_shared_platform or not lexical.is_trusted_domain
 
     results = await asyncio.gather(
-        check_google_safe_browsing(scanned_url),
-        check_urlhaus(scanned_url, lexical.host),
-        check_domain_age(lexical.registered_domain),
-        analyze_with_ai(scanned_url, lexical),
-        check_tls(scanned_url),
-        check_ct_logs(lexical.registered_domain) if heavy else _skip(CtResult),
-        analyze_page(scanned_url) if heavy else _skip(PageResult),
+        _staged("gsb", check_google_safe_browsing(scanned_url), progress),
+        _staged("urlhaus", check_urlhaus(scanned_url, lexical.host), progress),
+        _staged("domain_age", check_domain_age(lexical.registered_domain), progress),
+        _staged("ai", analyze_with_ai(scanned_url, lexical), progress),
+        _staged("tls", check_tls(scanned_url), progress),
+        _staged("ct", check_ct_logs(lexical.registered_domain)
+                if heavy else _skip(CtResult), progress),
+        _staged("page", analyze_page(scanned_url)
+                if heavy else _skip(PageResult), progress),
         return_exceptions=True,
     )
     (gsb_result, rep_result, age_result, ai_result,
@@ -255,10 +293,11 @@ async def _run_pipeline(original_url: str) -> ScanResponse:
         page=page,
     )
     response.elapsed_ms = int((time.perf_counter() - started) * 1000)
+    await _report(progress, "score")
     return response
 
 
-async def _scan(url: str) -> ScanResponse:
+async def _scan(url: str, progress: ProgressReporter = None) -> ScanResponse:
     """Скан с кешем, дедупликацией и общим дедлайном."""
     async def _factory() -> ScanResponse:
         # Дедлайн охватывает И ожидание очереди, и саму работу.
@@ -268,7 +307,7 @@ async def _scan(url: str) -> ScanResponse:
         # соблюдались — замерено, 23 запроса из 120 шли дольше.
         async def _queued() -> ScanResponse:
             async with _scan_semaphore:
-                return await _run_pipeline(url)
+                return await _run_pipeline(url, progress)
 
         return await asyncio.wait_for(_queued(),
                                       timeout=settings.SCAN_TOTAL_TIMEOUT)
@@ -349,6 +388,99 @@ async def scan_url(request: ScanRequest) -> ScanResponse:
     `scanned_url` — что реально анализировалось после редиректов."""
     logger.info("Scan requested: %s", request.url)
     return await _scan(request.url)
+
+
+# ── Поток прогресса ──────────────────────────────────────────────
+# Зачем: сервер делает все проверки разом и отвечает один раз, поэтому
+# экран ожидания двигал шаги по таймеру — то есть показывал не ход
+# работы, а правдоподобную анимацию. Здесь он показывает настоящий.
+#
+# Транспорт — Server-Sent Events поверх POST, а не EventSource: тому
+# нужен GET, то есть адрес проверки уехал бы в строку запроса, а с ним
+# и в логи прокси. Читается обычным fetch со стороны страницы.
+
+# Задачи сканов, у которых читатель мог отвалиться. Держим ссылку,
+# иначе сборщик мусора вправе убить задачу на полпути — и результат
+# не доедет до кеша, хотя работа уже сделана.
+_detached_scans: set[asyncio.Task] = set()
+
+
+def _sse(payload: dict) -> str:
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+async def _scan_events(url: str):
+    queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def report(stage: str) -> None:
+        queue.put_nowait(stage)
+
+    task = asyncio.create_task(_scan(url, progress=report))
+    _detached_scans.add(task)
+    # Исключение задачи кто-то обязан забрать, иначе asyncio ругается
+    # в лог при сборке мусора. Забираем ниже, а здесь — страховка.
+    task.add_done_callback(lambda t: (_detached_scans.discard(t), t.exception()
+                                      if not t.cancelled() else None))
+
+    # Первое событие уходит сразу: для человека после холодного старта
+    # Render это первый признак, что сервер вообще проснулся.
+    yield _sse({"event": "start", "stages": list(PIPELINE_STAGES)})
+
+    done = 0
+    while not task.done():
+        getter = asyncio.ensure_future(queue.get())
+        finished, _ = await asyncio.wait({getter, task},
+                                         return_when=asyncio.FIRST_COMPLETED)
+        if getter in finished:
+            done += 1
+            yield _sse({"event": "stage", "name": getter.result(),
+                        "done": done, "total": len(PIPELINE_STAGES)})
+        else:
+            getter.cancel()
+
+    # Этапы, успевшие доложиться, пока мы смотрели на завершение задачи.
+    while not queue.empty():
+        done += 1
+        yield _sse({"event": "stage", "name": queue.get_nowait(),
+                    "done": done, "total": len(PIPELINE_STAGES)})
+
+    try:
+        result = task.result()
+    except HTTPException as exc:
+        # Поток уже отдан с кодом 200, поэтому об ошибке сообщаем
+        # внутри него, а не статусом.
+        yield _sse({"event": "error", "status": exc.status_code,
+                    "detail": exc.detail})
+        return
+    except asyncio.CancelledError:
+        raise
+    except Exception:                                  # noqa: BLE001
+        logger.exception("Streaming scan failed for %s", url)
+        yield _sse({"event": "error", "status": 500,
+                    "detail": "Внутренняя ошибка сервиса"})
+        return
+
+    yield _sse({"event": "done", "result": result.model_dump(mode="json")})
+
+
+@app.post("/scan/stream", tags=["scan"])
+async def scan_stream(request: ScanRequest) -> StreamingResponse:
+    """То же, что POST /scan, но с докладом о ходе проверки.
+
+    Результат собирает тот же `_run_pipeline` — двух путей подсчёта
+    быть не должно, это проверяется тестом."""
+    logger.info("Streaming scan requested: %s", request.url)
+    return StreamingResponse(
+        _scan_events(request.url),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            # Иначе прокси копит ответ в буфере и отдаёт разом —
+            # и весь смысл потока пропадает.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/batch", response_model=list[ScanResponse], tags=["scan"])
