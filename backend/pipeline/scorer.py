@@ -67,6 +67,33 @@ class _SignalCollector:
                                    weight=0, title=title, detail=detail))
 
 
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    """Русские окончания: 1 год, 2 года, 5 лет, 11 лет, 21 год."""
+    tail = abs(n) % 100
+    if 11 <= tail <= 14:
+        return many
+    tail %= 10
+    if tail == 1:
+        return one
+    if 2 <= tail <= 4:
+        return few
+    return many
+
+
+def _human_age(age_days: int) -> str:
+    """Возраст словами, как сказал бы человек.
+
+    Было «Домену 24.6 г.» — так не говорят и не пишут. Округляем ВНИЗ:
+    «24 года» про домен 24,6 лет — правда, «25 лет» — уже нет.
+    """
+    if age_days >= 365:
+        years = age_days // 365
+        return f"{years} {_plural(years, 'год', 'года', 'лет')}"
+    # 11 — потолок: «12 месяцев» прямо перед «1 год» читается нелепо.
+    months = min(11, max(1, age_days // 30))
+    return f"{months} {_plural(months, 'месяц', 'месяца', 'месяцев')}"
+
+
 def _verdict(score: int) -> Verdict:
     if score >= settings.PHISHING_THRESHOLD:
         return Verdict.PHISHING
@@ -231,9 +258,8 @@ def calculate_risk_score(
                   f"Домену {age_days} дн. — меньше трёх месяцев",
                   weight_key="domain_recent")
         else:
-            years = age_days / 365.25
             c.ok("DOMAIN_MATURE", "Возраст домена",
-                 f"Домену {years:.1f} г. — зрелый домен с историей")
+                 f"Домену {_human_age(age_days)} — зрелый домен с историей")
     elif domain_age.checked and domain_age.error:
         c.add("DOMAIN_NOT_REGISTERED", Severity.WARN, "Регистрация домена",
               domain_age.error, weight_key="domain_age_unknown")
