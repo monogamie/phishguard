@@ -368,3 +368,26 @@ def test_f18_host_hit_on_an_ordinary_domain_still_weighs(url):
 def test_f18_the_link_itself_in_the_database_convicts_anywhere():
     rep = ReputationResult(checked=True, url_listed=True, threat="malware")
     assert "URLHAUS_URL" in weighted(score("https://t.me/malware-drop", reputation=rep))
+
+
+# ── Возраст словами, а не «24.6 г.» ──────────────────────────────
+
+@pytest.mark.parametrize("days,expected", [
+    (90, "3 месяца"), (200, "6 месяцев"), (364, "11 месяцев"),
+    (365, "1 год"), (730, "2 года"), (1825, "5 лет"),
+    (7670, "21 год"), (8030, "22 года"), (9000, "24 года"),
+    (11000, "30 лет"),
+])
+def test_domain_age_is_written_the_way_people_speak(days, expected):
+    """«Домену 24.6 г.» — так не пишут. И округляем ВНИЗ: про домен
+    24,6 лет «24 года» правда, а «25 лет» уже нет."""
+    from pipeline.scorer import _human_age
+
+    assert _human_age(days) == expected
+
+
+def test_mature_domain_signal_uses_it():
+    result = score("https://example.com/",
+                   age=DomainAgeResult(checked=True, age_days=9000, source="rdap"))
+    said = [s.detail for s in result.signals if s.code == "DOMAIN_MATURE"]
+    assert said and "24 года" in said[0], said
