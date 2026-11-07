@@ -417,3 +417,24 @@ def test_an_unopened_short_link_is_never_safe(url):
     assert not any(s.code == "TRUSTED_DOMAIN" for s in result.signals), (
         "значок «известный домен» рядом с «куда ведёт — неизвестно»"
     )
+
+
+def _brand_page(*brands):
+    return PageResult(checked=True, status_code=200, form_count=1,
+                      brands_in_text=list(brands), bytes_read=5000)
+
+
+def test_brand_in_address_and_on_page_is_one_fact():
+    """`vtb-leasing.ru` получал 55 за бренд в адресе и ещё 35 за тот же
+    бренд в тексте — 90 и «ОПАСНО» честной дочке ВТБ."""
+    r = _score(url="https://vtb-leasing.ru/", page=_brand_page("vtb"))
+    assert _weighted(r) == {"BRAND_IMPERSONATION"}
+    shown = [s for s in r.signals if s.code == "PAGE_BRAND_MISMATCH"]
+    assert shown and shown[0].weight == 0
+
+
+def test_other_brand_on_page_is_a_second_fact():
+    r = _score(url="https://vtb-leasing.ru/", page=_brand_page("vtb", "sberbank"))
+    assert _weighted(r) == {"BRAND_IMPERSONATION", "PAGE_BRAND_MISMATCH"}
+    detail = next(s.detail for s in r.signals if s.code == "PAGE_BRAND_MISMATCH")
+    assert "«sberbank»" in detail

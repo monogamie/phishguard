@@ -394,6 +394,14 @@ def calculate_risk_score(
                 b for b in page.brands_in_text
                 if lexical.registered_domain not in BRAND_DOMAINS.get(b, ())
             ]
+        # Бренд из домена страница видит и в тексте — на своей же
+        # главной он стоит десяток раз. Это тот же факт, что уже
+        # засчитан выше по адресу: `vtb-leasing.ru` получал 55 + 35.
+        brand_from_address = (lexical.brand_match.brand
+                              if lexical.brand_match else None)
+        brand_seen_twice = brand_from_address in foreign_brands
+        if brand_seen_twice:
+            foreign_brands.remove(brand_from_address)
 
         # Поле пароля и кнопка «войти через Telegram» есть у множества
         # нормальных сайтов: у форумов, магазинов, сервисов. Сами по
@@ -473,6 +481,12 @@ def calculate_risk_score(
                       f"но домен {shown_domain} этой компании "
                       f"не принадлежит",
                       weight_key="page_brand_mismatch")
+        elif brand_seen_twice:
+            c.add("PAGE_BRAND_MISMATCH", Severity.INFO,
+                  "Бренд из адреса — и на странице",
+                  f"Страница тоже говорит от имени «{brand_from_address}». "
+                  f"Это то же, что видно по адресу, отдельно не считаем",
+                  weight=0)
 
         if page.messenger_login:
             names = ", ".join(page.messenger_login)
