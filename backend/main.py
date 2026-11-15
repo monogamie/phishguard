@@ -273,6 +273,10 @@ async def _run_pipeline(original_url: str,
 
     # ── Уровень 3 первым: он мгновенный и даёт хост для остальных ─
     lexical = lexical_analyzer.analyze(scanned_url)
+    # Исходный адрес разбираем тоже, если нас увели на другой домен:
+    # иначе всё, что было в нём написано, пропадает без следа.
+    origin_lexical = (lexical_analyzer.analyze(original_url)
+                      if redirects.changed_domain else None)
     await _report(progress, "lexical")
 
     # ── Уровни 1, 1b, 1c, 2 — параллельно ────────────────────────
@@ -328,6 +332,7 @@ async def _run_pipeline(original_url: str,
         reputation=reputation,
         domain_age=age,
         lexical=lexical,
+        origin_lexical=origin_lexical,
         redirects=redirects,
         ai=ai,
         tls=tls,

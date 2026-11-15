@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+from urllib.parse import urlsplit
 
 from config import settings
+
 from models import (
     AiVerdictResult,
     CtResult,
@@ -121,8 +123,13 @@ def _confidence(gsb: ThreatIntelResult, reputation: ReputationResult,
         if extra is None or getattr(extra, "skipped", False):
             continue
         total += 1
-        if extra.checked:
+        # «Ответил» — не «узнал»: заглушка бот-защиты с кодом 403 — это
+        # ответ, но страницы мы не видели.
+        status = getattr(extra, "status_code", None)
+        saw_nothing = status is not None and not 200 <= status < 300
+        if extra.checked and not saw_nothing:
             available += 1
+
     # Уровни, выключенные отсутствием ключа, из знаменателя тоже
     # убираем: это настройка, а не молчащий источник.
     for core in (gsb, reputation):
@@ -138,407 +145,21 @@ def _confidence(gsb: ThreatIntelResult, reputation: ReputationResult,
     return round(min(available / total, 1.0), 2)
 
 
-def calculate_risk_score(
-    url: str,
-    original_url: str,
-    gsb: ThreatIntelResult,
-    reputation: ReputationResult,
-    domain_age: DomainAgeResult,
-    lexical: LexicalFeatures,
-    redirects: Optional[RedirectInfo] = None,
-    ai: Optional[AiVerdictResult] = None,
-    tls: Optional[TlsResult] = None,
-    ct: Optional[CtResult] = None,
-    page: Optional[PageResult] = None,
-) -> ScanResponse:
-    """
-    Собирает улики всех уровней в итоговый ScanResponse.
+# Что из исходного адреса идёт в счёт после переадресации: только то,
+# что сказано о самом ИМЕНИ сайта. `http://`, длина и параметры — нет:
+# `http://gmail.com` честно уводит на длинный адрес входа Google, и
+# снимать из-за этого потолок доверия нельзя.
+_ORIGIN_NAME_CODES = frozenset({
+    "BRAND_HOMOGRAPH", "BRAND_TYPOSQUAT", "BRAND_IMPERSONATION",
+    "SCAM_PATTERN", "TRIGGER_KEYWORDS", "SUSPICIOUS_TLD", "IP_IN_URL",
+    "AT_SYMBOL", "MIXED_SCRIPTS", "NON_ASCII_HOST", "PUNYCODE",
+    "ENCODED_HOST",
+})
 
-    Args:
-        url:          адрес, который реально анализировался (после редиректов)
-        original_url: то, что ввёл пользователь
-        gsb:          Google Safe Browsing (уровень 1)
-        reputation:   URLhaus (уровень 1b)
-        domain_age:   RDAP/WHOIS (уровень 2)
-        lexical:      структурные признаки (уровень 3)
-        redirects:    цепочка редиректов (уровень 0)
-        ai:           мнение языковой модели (уровень 1c)
-        tls:          сертификат (уровень 2b)
-        ct:           журналы Certificate Transparency (уровень 2c)
-        page:         содержимое страницы (уровень 5)
-    """
-    c = _SignalCollector()
-    external_hit = False
 
-    # ── Уровень 0: редиректы ─────────────────────────────────────
-    if redirects is not None and redirects.hops > 0:
-        chain_text = " → ".join(redirects.chain[-3:])
-        if redirects.was_shortener:
-            c.add("SHORTENER", Severity.WARN, "Сокращатель ссылок",
-                  f"Ссылка скрыта сервисом сокращения и ведёт на: {redirects.final_url}",
-                  weight_key="shortener")
-        if redirects.changed_domain:
-            c.add("CROSS_DOMAIN_REDIRECT", Severity.WARN, "Смена домена",
-                  f"Переадресация уводит на другой домен: {chain_text}",
-                  weight_key="cross_domain_redirect")
-        if redirects.hops > 2:
-            c.add("LONG_REDIRECT_CHAIN", Severity.WARN, "Длинная цепочка",
-                  f"{redirects.hops} последовательных переадресаций — "
-                  f"типичный приём сокрытия конечного адреса",
-                  weight_key="long_redirect_chain")
-    elif redirects is not None and redirects.was_shortener and not redirects.resolved:
-        c.add("SHORTENER_UNRESOLVED", Severity.WARN, "Ссылка не развёрнута",
-              "Это сокращённая ссылка, но развернуть её не удалось — "
-              "куда она ведёт, неизвестно. Считайте её незнакомой",
-              weight_key="shortener")
-
-    # ── Уровень 1: Google Safe Browsing ──────────────────────────
-    if gsb.is_threat:
-        external_hit = True
-        labels = ", ".join(THREAT_TYPE_LABELS.get(t, t) for t in gsb.threat_types)
-        c.add("GSB_MATCH", Severity.DANGER, "Google Safe Browsing",
-              f"Адрес числится в базе угроз Google. Категории: {labels}",
-              weight_key="google_safe_browsing")
-        logger.warning("GSB confirmed threat for %s: %s", url, gsb.threat_types)
-    elif gsb.checked:
-        c.ok("GSB_CLEAN", "Google Safe Browsing", "В базе угроз Google не найден")
-
-    # ── Уровень 1b: URLhaus ──────────────────────────────────────
-    if reputation.url_listed:
-        external_hit = True
-        c.add("URLHAUS_URL", Severity.DANGER, "URLhaus",
-              f"Ссылка есть в базе вредоносных URL abuse.ch. "
-              f"Тип угрозы: {reputation.threat or 'malware'}",
-              weight_key="urlhaus_url")
-    if reputation.host_listed:
-        # ВАЖНО: попадание по ХОСТУ — это не приговор самой ссылке, и
-        # `external_hit` тут не ставится. URLhaus ведёт учёт по хосту, а
-        # на любой крупной площадке с пользовательским контентом чужих
-        # вредоносных ссылок тысячи. С полом в 90 баллов «ОПАСНО»
-        # получали github.com, docs.google.com, t.me и dropbox.com —
-        # проверено на живом сайте.
-        #
-        # У доверенных площадок это вообще норма жизни, поэтому им
-        # признак показываем, но без веса: пусть человек видит, что мы
-        # смотрели, и понимает, что чужая зараза на GitHub — не повод
-        # не открывать GitHub.
-        # Площадка сюда входит наравне с доверенным доменом: у `t.me`
-        # и `telegra.ph` общий хост на всех, и трёх ссылок на весь
-        # телеграм хватало, чтобы пометить канал его основателя.
-        if lexical.is_trusted_domain or lexical.on_shared_platform:
-            c.add("URLHAUS_HOST_SHARED", Severity.INFO, "URLhaus: хост",
-                  f"На этом хосте когда-то находили вредоносные ссылки "
-                  f"({reputation.host_url_count}), но это большая площадка "
-                  f"с пользовательским содержимым — к самой ссылке это "
-                  f"отношения не имеет",
-                  weight=0)
-        else:
-            c.add("URLHAUS_HOST", Severity.DANGER, "URLhaus: хост",
-                  f"С этого хоста уже раздавали вредоносное ПО "
-                  f"(зафиксировано ссылок: {reputation.host_url_count})",
-                  weight_key="urlhaus_host")
-    if reputation.checked and not (reputation.url_listed or reputation.host_listed):
-        c.ok("URLHAUS_CLEAN", "URLhaus", "В базе вредоносных URL не найден")
-
-    # ── Уровень 2: возраст домена ────────────────────────────────
-    age_days = domain_age.age_days
-    if domain_age.checked and age_days is not None:
-        if age_days < settings.DOMAIN_AGE_VERY_NEW:
-            c.add("DOMAIN_VERY_NEW", Severity.DANGER, "Возраст домена",
-                  f"Домен зарегистрирован {age_days} дн. назад. Легитимные "
-                  f"сервисы не запускаются на домене возрастом в несколько дней",
-                  weight_key="domain_very_new")
-        elif age_days < settings.DOMAIN_AGE_NEW:
-            c.add("DOMAIN_NEW", Severity.WARN, "Возраст домена",
-                  f"Домену {age_days} дн. — меньше месяца. Большинство "
-                  f"фишинговых доменов моложе 30 дней",
-                  weight_key="domain_new")
-        elif age_days < settings.DOMAIN_AGE_RECENT:
-            c.add("DOMAIN_RECENT", Severity.WARN, "Возраст домена",
-                  f"Домену {age_days} дн. — меньше трёх месяцев",
-                  weight_key="domain_recent")
-        else:
-            c.ok("DOMAIN_MATURE", "Возраст домена",
-                 f"Домену {_human_age(age_days)} — зрелый домен с историей")
-    elif domain_age.checked and domain_age.error:
-        c.add("DOMAIN_NOT_REGISTERED", Severity.WARN, "Регистрация домена",
-              domain_age.error, weight_key="domain_age_unknown")
-    else:
-        # Недоступность WHOIS/RDAP — слабый сигнал: у одноразовых
-        # доменов данные часто скрыты, но и у нормальных ccTLD тоже.
-        c.add("DOMAIN_AGE_UNKNOWN", Severity.INFO, "Возраст домена",
-              "Дату регистрации получить не удалось",
-              weight_key="domain_age_unknown")
-
-    # Возраст сайта умеют оценить три источника, и это один и тот же
-    # факт, а не три. Считает ровно один — лучший из доступных:
-    #
-    #   реестр (RDAP/WHOIS) — дата регистрации, первоисточник;
-    #   журналы CT          — дата первого в мире сертификата;
-    #   живой сертификат    — дата текущего, самая грубая оценка
-    #                         (его перевыпускают каждые 60–90 дней).
-    #
-    # Пока считали все, свежий домен без записи в реестре набирал
-    # 35 за журналы плюс 30 за сертификат — 65 баллов за один факт.
-    age_known = domain_age.checked and domain_age.age_days is not None
-    ct_knows_age = (ct is not None and ct.checked
-                    and ct.first_seen_days is not None)
-    age_covered = age_known or ct_knows_age
-
-    # ── Уровень 2b: сертификат ───────────────────────────────────
-    if tls is not None and tls.checked:
-        if tls.covers_domain is False:
-            c.add("CERT_MISMATCH", Severity.DANGER, "Сертификат не тот",
-                  "Сертификат выдан на другое имя. Браузер на такой странице "
-                  "показывает предупреждение, которое легко проскочить",
-                  weight_key="cert_mismatch")
-        if tls.self_signed:
-            c.add("CERT_SELF_SIGNED", Severity.DANGER, "Самоподписанный сертификат",
-                  "Сертификат выписан сам себе, а не удостоверяющим центром. "
-                  "Настоящие сервисы так не делают",
-                  weight_key="cert_self_signed")
-        if tls.expired:
-            c.add("CERT_EXPIRED", Severity.WARN, "Сертификат просрочен",
-                  "Срок действия сертификата истёк — сайт заброшен или сделан "
-                  "на скорую руку",
-                  weight_key="cert_expired")
-        if tls.age_days is not None:
-            # Возраст сертификата — это косвенная оценка возраста сайта,
-            # и вес ей даём ТОЛЬКО когда реестр молчит. Иначе один факт
-            # «домен свежий» засчитывается дважды: 50 за домен плюс 30
-            # за сертификат — 80 баллов из 60 нужных для «ОПАСНО», ещё
-            # до единой настоящей улики.
-            #
-            # Хуже того, на зрелом домене свежий сертификат — это
-            # обычное продление: Let's Encrypt перевыпускает каждые
-            # 60–90 дней. Тринадцатилетний сайт получал «ПОДОЗРИТЕЛЬНО»
-            # просто за то, что вчера продлил сертификат.
-            #
-            # Для журналов CT такая же развилка уже стояла ниже, а для
-            # сертификата её забыли — асимметрия была случайной.
-            if tls.age_days < settings.CERT_VERY_NEW_DAYS and not age_covered:
-                c.add("CERT_VERY_NEW", Severity.WARN, "Свежий сертификат",
-                      f"Сертификат выпущен {tls.age_days} дн. назад. "
-                      f"Сертификат получают вместе с доменом, значит и сайт "
-                      f"появился только что",
-                      weight_key="cert_very_new")
-            elif tls.age_days < settings.CERT_NEW_DAYS and not age_covered:
-                c.add("CERT_NEW", Severity.INFO, "Сертификат новый",
-                      f"Сертификату {tls.age_days} дн.",
-                      weight_key="cert_new")
-            elif not tls.expired:
-                # Иначе в одном списке оказывались «просрочен» и
-                # «действующий» — балл верный, объяснение противоречивое.
-                c.ok("CERT_OK", "Сертификат",
-                     f"Действующий сертификат, выпущен {tls.age_days} дн. назад"
-                     + (f", издатель: {tls.issuer}" if tls.issuer else ""))
-    elif tls is not None and tls.handshake_failed and lexical.scheme == "https":
-        c.add("TLS_BROKEN", Severity.WARN, "Защищённое соединение не работает",
-              "Адрес заявлен как https, но установить защищённое соединение "
-              "не удалось",
-              weight_key="tls_broken")
-
-    # ── Уровень 2c: журналы сертификатов ─────────────────────────
-    # Независимая оценка возраста домена. Даём её вес ТОЛЬКО когда
-    # RDAP и WHOIS молчат: иначе один и тот же факт «домен свежий»
-    # засчитывается дважды.
-    if ct is not None and ct.checked:
-        if ct.first_seen_days is not None and not age_known:
-            if ct.first_seen_days < settings.DOMAIN_AGE_VERY_NEW:
-                c.add("CT_FIRST_SEEN_VERY_NEW", Severity.DANGER,
-                      "Домен только появился",
-                      f"Первый сертификат на этот домен выпущен "
-                      f"{ct.first_seen_days} дн. назад. Дату регистрации "
-                      f"узнать не удалось, но журналы сертификатов её выдают",
-                      weight_key="ct_first_seen_very_new")
-            elif ct.first_seen_days < settings.DOMAIN_AGE_NEW:
-                c.add("CT_FIRST_SEEN_NEW", Severity.WARN, "Домен недавний",
-                      f"Первый сертификат выпущен {ct.first_seen_days} дн. назад",
-                      weight_key="ct_first_seen_new")
-            else:
-                c.ok("CT_MATURE", "История домена",
-                     f"В журналах сертификатов домен известен "
-                     f"{ct.first_seen_days} дн.")
-        elif ct.total_certs == 0 and lexical.scheme == "https":
-            # Именно `== 0`, не `not ct.total_certs`: None означает
-            # «ответ не дочитан», а не «сертификатов нет».
-            c.add("CT_NO_RECORDS", Severity.INFO, "Нет в журналах сертификатов",
-                  "На домен никогда не выпускали сертификат, хотя адрес "
-                  "заявлен как https",
-                  weight_key="ct_no_records")
-        elif ct.first_seen_days is not None:
-            if ct.first_seen_days < settings.DOMAIN_AGE_NEW:
-                # Зелёный сигнал про трёхдневный домен рядом с красным
-                # «домен только появился» читается как оправдание.
-                c.add("CT_FIRST_SEEN_NEW", Severity.INFO, "История домена",
-                      f"В журналах сертификатов домен известен всего "
-                      f"{ct.first_seen_days} дн.", weight=0)
-            else:
-                c.ok("CT_CONFIRMS", "История домена",
-                     f"Журналы сертификатов подтверждают: домен известен "
-                     f"{ct.first_seen_days} дн.")
-
-    # Домен для показа человеку: xn--форма верна технически, но
-    # «мвд.рф» читается, а «xn--b1aew.xn--p1ai» — нет.
-    shown_domain = lexical.decoded_host or lexical.registered_domain
-
-    # ── Уровень 5: содержимое страницы ───────────────────────────
-    if page is not None and page.checked:
-        from data.brands import BRAND_DOMAINS
-
-        # Бренд заявлен в тексте, но домен ему не принадлежит.
-        foreign_brands = []
-        if page.brands_in_text and (lexical.on_shared_platform
-                                    or not lexical.is_trusted_domain):
-            foreign_brands = [
-                b for b in page.brands_in_text
-                if lexical.registered_domain not in BRAND_DOMAINS.get(b, ())
-            ]
-        # Бренд из домена страница видит и в тексте — на своей же
-        # главной он стоит десяток раз. Это тот же факт, что уже
-        # засчитан выше по адресу: `vtb-leasing.ru` получал 55 + 35.
-        brand_from_address = (lexical.brand_match.brand
-                              if lexical.brand_match else None)
-        brand_seen_twice = brand_from_address in foreign_brands
-        if brand_seen_twice:
-            foreign_brands.remove(brand_from_address)
-
-        # Поле пароля и кнопка «войти через Telegram» есть у множества
-        # нормальных сайтов: у форумов, магазинов, сервисов. Сами по
-        # себе они не улика, а описание обычной страницы входа.
-        #
-        # Уликой они становятся рядом с чем-то настоящим: чужим брендом
-        # на странице, формой на сторонний адрес или доменом, заведённым
-        # на прошлой неделе. Тогда кнопка «войти через Telegram»
-        # объясняет, КАК именно уведут аккаунт.
-        #
-        # Без этой оговорки форум с входом через ВК получал 57 баллов,
-        # а молодой стартап — 72, то есть «ОПАСНО». На поимку реального
-        # фишинга признак при этом не влиял никак: в том случае с угоном
-        # Telegram балл был 100 и с ним, и без него.
-        # На чужой площадке возраст берётся у самой площадки: у
-        # `pages.dev` и `telegra.ph` он годами, сколько бы минут ни было
-        # самой странице. Поэтому третье условие там не выполнялось
-        # никогда, и форма пароля вместе с кнопкой «войти через
-        # Telegram» — та самая связка из истории проекта — весили ноль.
-        #
-        # Само размещение на площадке, где публикует кто угодно, здесь
-        # и есть повод отнестись к форме пароля серьёзно.
-        # Сам адрес уже выглядит приманкой: `my-prize-club.ru`,
-        # `golosovanie-za-rebenka.ru`, чужой бренд в имени, бесплатная
-        # зона. Баллов это не добавляет — они начислены выше, — но
-        # снимает презумпцию «обычная страница входа».
-        #
-        # Без этого форма пароля вместе с кнопкой «войти через Telegram»
-        # на своём домене старше недели весила ноль. Это дословно
-        # сценарий из истории проекта, и обрыв на седьмом дне был
-        # отвесный: 6 дней — 100 баллов, 7 дней — 47. Мошенники
-        # домены выдерживают, 40 дней для фишинга обычное дело.
-        address_is_a_lure = bool(
-            lexical.scam_pattern
-            or lexical.keywords_in_host
-            or lexical.brand_match
-            or lexical.suspicious_tld
-        )
-        domain_is_young = (
-            domain_age.checked and domain_age.age_days is not None
-            and domain_age.age_days < settings.DOMAIN_AGE_NEW
-        )
-
-        hard_evidence = (bool(foreign_brands) or bool(page.cross_domain_form)
-                         or lexical.on_shared_platform
-                         or address_is_a_lure or domain_is_young)
-
-        if page.cross_domain_form:
-            c.add("PAGE_CROSS_DOMAIN_FORM", Severity.DANGER,
-                  "Данные уходят на другой сайт",
-                  f"Форма отправляет введённое на посторонний адрес: "
-                  f"{page.cross_domain_form}",
-                  weight_key="page_cross_domain_form")
-
-        if foreign_brands:
-            names = ", ".join(foreign_brands)
-            # На площадке домен НИКОГДА не принадлежит бренду — там
-            # у всех общий адрес. Обвинять за это значит обвинять и
-            # официальный канал Сбербанка в телеграме. Улика — не само
-            # упоминание, а то, что рядом просят данные.
-            only_a_mention = (lexical.on_shared_platform
-                              and not page.cross_domain_form
-                              and not page.has_password_field
-                              and not page.messenger_login)
-            if only_a_mention:
-                c.add("PAGE_BRAND_MISMATCH", Severity.INFO,
-                      "Бренд на чужой площадке",
-                      f"Страница говорит от имени «{names}», а лежит на "
-                      f"{shown_domain} — площадке, где публикует кто угодно. "
-                      f"Это может быть и официальная страница компании, и "
-                      f"подделка: площадка такое не проверяет",
-                      weight=0)
-            else:
-                c.add("PAGE_BRAND_MISMATCH", Severity.DANGER,
-                      "Чужой бренд на странице",
-                      f"Страница выдаёт себя за «{names}», "
-                      f"но домен {shown_domain} этой компании "
-                      f"не принадлежит",
-                      weight_key="page_brand_mismatch")
-        elif brand_seen_twice:
-            c.add("PAGE_BRAND_MISMATCH", Severity.INFO,
-                  "Бренд из адреса — и на странице",
-                  f"Страница тоже говорит от имени «{brand_from_address}». "
-                  f"Это то же, что видно по адресу, отдельно не считаем",
-                  weight=0)
-
-        if page.messenger_login:
-            names = ", ".join(page.messenger_login)
-            if hard_evidence:
-                c.add("PAGE_MESSENGER_LOGIN", Severity.DANGER,
-                      "Вход через мессенджер",
-                      f"Страница предлагает войти через {names}. Именно так "
-                      f"угоняют аккаунты: вы подтверждаете вход, который "
-                      f"запустил не вы",
-                      weight_key="page_messenger_login")
-            else:
-                c.add("PAGE_MESSENGER_LOGIN_OK", Severity.INFO,
-                      "Вход через мессенджер",
-                      f"Страница предлагает войти через {names}. Так делают "
-                      f"и обычные сайты, поэтому сам по себе этот способ "
-                      f"входа ни о чём не говорит",
-                      weight=0)
-
-        if page.has_password_field and (lexical.on_shared_platform
-                                        or not lexical.is_trusted_domain):
-            if hard_evidence:
-                c.add("PAGE_PASSWORD_FORM", Severity.WARN, "Просит пароль",
-                      "На странице есть поле для пароля. Вместе с остальными "
-                      "признаками — повод не вводить ничего",
-                      weight_key="page_password_form")
-            else:
-                c.add("PAGE_PASSWORD_FORM_OK", Severity.INFO, "Просит пароль",
-                      "На странице есть поле для пароля — как на любой "
-                      "странице входа. Ничего подозрительного рядом с ним "
-                      "мы не нашли",
-                      weight=0)
-
-        if page.hidden_input_count >= 3:
-            c.add("PAGE_HIDDEN_INPUTS", Severity.INFO, "Скрытые поля в форме",
-                  f"В форме {page.hidden_input_count} скрытых полей — так "
-                  f"передают метки кампании в массовых рассылках",
-                  weight_key="page_hidden_inputs")
-
-        if not any([page.messenger_login, page.cross_domain_form,
-                    page.has_password_field]):
-            if page.status_code is not None and 200 <= page.status_code < 300:
-                c.ok("PAGE_CLEAN", "Содержимое страницы",
-                     "Форм для ввода паролей и подозрительных кнопок входа нет")
-            else:
-                # При 403 от бот-защиты мы видели заглушку, а не сайт.
-                # Говорить «форм нет» — успокаивать на пустом месте.
-                c.add("PAGE_NOT_SEEN", Severity.INFO, "Страница не показана",
-                      f"Сайт ответил кодом {page.status_code} — "
-                      f"настоящее содержимое проверить не удалось",
-                      weight=0)
-
-    # ── Уровень 3: структура и лексика ───────────────────────────
+def _add_address_signals(c: _SignalCollector, lexical: LexicalFeatures) -> None:
+    """Признаки самого адреса. Вынесено, чтобы тем же кодом разобрать
+    и исходный адрес, когда с него переадресовали."""
     if lexical.has_ip_address:
         c.add("IP_IN_URL", Severity.DANGER, "IP вместо домена",
               "Адрес задан IP-адресом. У легитимных сервисов есть доменное "
@@ -717,6 +338,495 @@ def calculate_risk_score(
               "Цифры в имени домена часто заменяют похожие буквы (0 → o, 1 → l)",
               weight_key="digits_in_domain")
 
+
+def calculate_risk_score(
+    url: str,
+    original_url: str,
+    gsb: ThreatIntelResult,
+    reputation: ReputationResult,
+    domain_age: DomainAgeResult,
+    lexical: LexicalFeatures,
+    redirects: Optional[RedirectInfo] = None,
+    ai: Optional[AiVerdictResult] = None,
+    tls: Optional[TlsResult] = None,
+    ct: Optional[CtResult] = None,
+    page: Optional[PageResult] = None,
+    origin_lexical: Optional[LexicalFeatures] = None,
+) -> ScanResponse:
+    """
+    Собирает улики всех уровней в итоговый ScanResponse.
+
+    Args:
+        url:          адрес, который реально анализировался (после редиректов)
+        original_url: то, что ввёл пользователь
+        gsb:          Google Safe Browsing (уровень 1)
+        reputation:   URLhaus (уровень 1b)
+        domain_age:   RDAP/WHOIS (уровень 2)
+        lexical:      структурные признаки (уровень 3)
+        redirects:    цепочка редиректов (уровень 0)
+        ai:           мнение языковой модели (уровень 1c)
+        tls:          сертификат (уровень 2b)
+        ct:           журналы Certificate Transparency (уровень 2c)
+        page:         содержимое страницы (уровень 5)
+    """
+    c = _SignalCollector()
+    external_hit = False
+
+    # Сокращатель ответил сам, без переадресации: ссылку удалили или
+    # он повесил на неё свою страницу-предупреждение. Куда она вела,
+    # мы не узнали — это тот же «не развёрнут», а не «проверено, чисто».
+    # Главная страница самого сокращателя (`bit.ly/`) — не короткая ссылка.
+    shortener_dead_end = (
+        redirects is not None and redirects.was_shortener
+        and redirects.resolved and redirects.hops == 0
+        and urlsplit(url).path.strip("/") != ""
+    )
+    shortener_unresolved = (
+        redirects is not None and redirects.was_shortener
+        and (not redirects.resolved or shortener_dead_end)
+    )
+
+    # ── Уровень 0: редиректы ─────────────────────────────────────
+    if redirects is not None and redirects.hops > 0:
+        chain_text = " → ".join(redirects.chain[-3:])
+        if redirects.was_shortener:
+            c.add("SHORTENER", Severity.WARN, "Сокращатель ссылок",
+                  f"Ссылка скрыта сервисом сокращения и ведёт на: {redirects.final_url}",
+                  weight_key="shortener")
+        if redirects.changed_domain and redirects.was_shortener:
+            # Сокращатель меняет домен по определению — это тот же факт,
+            # что уже назван признаком выше.
+            c.add("CROSS_DOMAIN_REDIRECT", Severity.INFO, "Смена домена",
+                  f"Короткая ссылка ведёт на другой домен: {chain_text}. "
+                  f"Для сокращателя это обычное дело, отдельно не считаем",
+                  weight=0)
+        elif redirects.changed_domain and lexical.is_trusted_domain:
+            # Отправить на известный сайт — не приём сокрытия. Вес
+            # здесь и раньше съедал потолок доверия.
+            c.add("CROSS_DOMAIN_REDIRECT", Severity.INFO, "Смена домена",
+                  f"Переадресация ведёт на известный сайт: {chain_text}",
+                  weight=0)
+        elif redirects.changed_domain:
+            c.add("CROSS_DOMAIN_REDIRECT", Severity.WARN, "Смена домена",
+                  f"Переадресация уводит на другой домен: {chain_text}",
+                  weight_key="cross_domain_redirect")
+        # Цепочка внутри одного сайта (`bbc.com → www → account → /signin`)
+        # — обычная дорога к странице входа. Сокрытием это становится,
+        # когда по дороге меняются домены.
+        from url_resolver import _registrable_host
+        chain_domains = {_registrable_host(u) for u in redirects.chain}
+        if redirects.hops > 2 and len(chain_domains) > 1:
+            c.add("LONG_REDIRECT_CHAIN", Severity.WARN, "Длинная цепочка",
+                  f"{redirects.hops} последовательных переадресаций — "
+                  f"типичный приём сокрытия конечного адреса",
+                  weight_key="long_redirect_chain")
+    elif shortener_unresolved:
+        c.add("SHORTENER_UNRESOLVED", Severity.WARN, "Ссылка не развёрнута",
+              ("Это сокращённая ссылка, но она никуда не ведёт: её удалили "
+               "или сам сокращатель её закрыл. Куда она вела, неизвестно"
+               if shortener_dead_end else
+               "Это сокращённая ссылка, но развернуть её не удалось — "
+               "куда она ведёт, неизвестно. Считайте её незнакомой"),
+              weight_key="shortener")
+
+    # ── Уровень 1: Google Safe Browsing ──────────────────────────
+    if gsb.is_threat:
+        external_hit = True
+        labels = ", ".join(THREAT_TYPE_LABELS.get(t, t) for t in gsb.threat_types)
+        c.add("GSB_MATCH", Severity.DANGER, "Google Safe Browsing",
+              f"Адрес числится в базе угроз Google. Категории: {labels}",
+              weight_key="google_safe_browsing")
+        logger.warning("GSB confirmed threat for %s: %s", url, gsb.threat_types)
+    elif gsb.checked:
+        c.ok("GSB_CLEAN", "Google Safe Browsing", "В базе угроз Google не найден")
+
+    # ── Уровень 1b: URLhaus ──────────────────────────────────────
+    if reputation.url_listed:
+        external_hit = True
+        c.add("URLHAUS_URL", Severity.DANGER, "URLhaus",
+              f"Ссылка есть в базе вредоносных URL abuse.ch. "
+              f"Тип угрозы: {reputation.threat or 'malware'}",
+              weight_key="urlhaus_url")
+    if reputation.host_listed:
+        # ВАЖНО: попадание по ХОСТУ — это не приговор самой ссылке, и
+        # `external_hit` тут не ставится. URLhaus ведёт учёт по хосту, а
+        # на любой крупной площадке с пользовательским контентом чужих
+        # вредоносных ссылок тысячи. С полом в 90 баллов «ОПАСНО»
+        # получали github.com, docs.google.com, t.me и dropbox.com —
+        # проверено на живом сайте.
+        #
+        # У доверенных площадок это вообще норма жизни, поэтому им
+        # признак показываем, но без веса: пусть человек видит, что мы
+        # смотрели, и понимает, что чужая зараза на GitHub — не повод
+        # не открывать GitHub.
+        # Площадка сюда входит наравне с доверенным доменом: у `t.me`
+        # и `telegra.ph` общий хост на всех, и трёх ссылок на весь
+        # телеграм хватало, чтобы пометить канал его основателя.
+        if lexical.is_trusted_domain or lexical.on_shared_platform:
+            c.add("URLHAUS_HOST_SHARED", Severity.INFO, "URLhaus: хост",
+                  f"На этом хосте когда-то находили вредоносные ссылки "
+                  f"({reputation.host_url_count}), но это большая площадка "
+                  f"с пользовательским содержимым — к самой ссылке это "
+                  f"отношения не имеет",
+                  weight=0)
+        else:
+            c.add("URLHAUS_HOST", Severity.DANGER, "URLhaus: хост",
+                  f"С этого хоста уже раздавали вредоносное ПО "
+                  f"(зафиксировано ссылок: {reputation.host_url_count})",
+                  weight_key="urlhaus_host")
+    if reputation.checked and not (reputation.url_listed or reputation.host_listed):
+        c.ok("URLHAUS_CLEAN", "URLhaus", "В базе вредоносных URL не найден")
+
+    # ── Уровень 2: возраст домена ────────────────────────────────
+    age_days = domain_age.age_days
+    if domain_age.checked and age_days is not None:
+        if age_days < settings.DOMAIN_AGE_VERY_NEW:
+            c.add("DOMAIN_VERY_NEW", Severity.DANGER, "Возраст домена",
+                  f"Домен зарегистрирован {age_days} дн. назад. Легитимные "
+                  f"сервисы не запускаются на домене возрастом в несколько дней",
+                  weight_key="domain_very_new")
+        elif age_days < settings.DOMAIN_AGE_NEW:
+            c.add("DOMAIN_NEW", Severity.WARN, "Возраст домена",
+                  f"Домену {age_days} дн. — меньше месяца. Большинство "
+                  f"фишинговых доменов моложе 30 дней",
+                  weight_key="domain_new")
+        elif age_days < settings.DOMAIN_AGE_RECENT:
+            c.add("DOMAIN_RECENT", Severity.WARN, "Возраст домена",
+                  f"Домену {age_days} дн. — меньше трёх месяцев",
+                  weight_key="domain_recent")
+        else:
+            c.ok("DOMAIN_MATURE", "Возраст домена",
+                 f"Домену {_human_age(age_days)} — зрелый домен с историей")
+    elif domain_age.checked and domain_age.error:
+        c.add("DOMAIN_NOT_REGISTERED", Severity.WARN, "Регистрация домена",
+              domain_age.error, weight_key="domain_age_unknown")
+    elif ct is not None and ct.checked and ct.first_seen_days is not None:
+        # Реестр промолчал, но возраст знают журналы сертификатов, —
+        # значит, он не «неизвестен». Иначе в одном разборе стояли
+        # «домен известен 11 лет» и +5 за «возраст неизвестен».
+        c.add("DOMAIN_AGE_UNKNOWN", Severity.INFO, "Возраст домена",
+              "Реестр дату регистрации не отдал — возраст оцениваем по "
+              "журналам сертификатов, см. ниже",
+              weight=0)
+    else:
+        # Недоступность WHOIS/RDAP — слабый сигнал: у одноразовых
+        # доменов данные часто скрыты, но и у нормальных ccTLD тоже.
+        c.add("DOMAIN_AGE_UNKNOWN", Severity.INFO, "Возраст домена",
+              "Дату регистрации получить не удалось",
+              weight_key="domain_age_unknown")
+
+    # Возраст сайта умеют оценить три источника, и это один и тот же
+    # факт, а не три. Считает ровно один — лучший из доступных:
+    #
+    #   реестр (RDAP/WHOIS) — дата регистрации, первоисточник;
+    #   журналы CT          — дата первого в мире сертификата;
+    #   живой сертификат    — дата текущего, самая грубая оценка
+    #                         (его перевыпускают каждые 60–90 дней).
+    #
+    # Пока считали все, свежий домен без записи в реестре набирал
+    # 35 за журналы плюс 30 за сертификат — 65 баллов за один факт.
+    age_known = domain_age.checked and domain_age.age_days is not None
+    ct_knows_age = (ct is not None and ct.checked
+                    and ct.first_seen_days is not None)
+    age_covered = age_known or ct_knows_age
+
+    # ── Уровень 2b: сертификат ───────────────────────────────────
+    if tls is not None and tls.checked:
+        if tls.covers_domain is False and (tls.self_signed
+                                           or lexical.has_ip_address):
+            # Самоподписанный сертификат почти всегда ещё и «не на то
+            # имя», а на IP-адрес сертификатов не выдают вовсе. Это тот
+            # же факт, что уже назван соседним признаком.
+            c.add("CERT_MISMATCH", Severity.INFO, "Сертификат не тот",
+                  "Сертификат выдан на другое имя. Отдельно не считаем: "
+                  "это следствие того, что уже названо рядом",
+                  weight=0)
+        elif tls.covers_domain is False:
+            c.add("CERT_MISMATCH", Severity.DANGER, "Сертификат не тот",
+                  "Сертификат выдан на другое имя. Браузер на такой странице "
+                  "показывает предупреждение, которое легко проскочить",
+                  weight_key="cert_mismatch")
+        if tls.self_signed:
+            c.add("CERT_SELF_SIGNED", Severity.DANGER, "Самоподписанный сертификат",
+                  "Сертификат выписан сам себе, а не удостоверяющим центром. "
+                  "Настоящие сервисы так не делают",
+                  weight_key="cert_self_signed")
+        if tls.expired:
+            c.add("CERT_EXPIRED", Severity.WARN, "Сертификат просрочен",
+                  "Срок действия сертификата истёк — сайт заброшен или сделан "
+                  "на скорую руку",
+                  weight_key="cert_expired")
+        if tls.age_days is not None:
+            # Возраст сертификата — это косвенная оценка возраста сайта,
+            # и вес ей даём ТОЛЬКО когда реестр молчит. Иначе один факт
+            # «домен свежий» засчитывается дважды: 50 за домен плюс 30
+            # за сертификат — 80 баллов из 60 нужных для «ОПАСНО», ещё
+            # до единой настоящей улики.
+            #
+            # Хуже того, на зрелом домене свежий сертификат — это
+            # обычное продление: Let's Encrypt перевыпускает каждые
+            # 60–90 дней. Тринадцатилетний сайт получал «ПОДОЗРИТЕЛЬНО»
+            # просто за то, что вчера продлил сертификат.
+            #
+            # Для журналов CT такая же развилка уже стояла ниже, а для
+            # сертификата её забыли — асимметрия была случайной.
+            if tls.age_days < settings.CERT_VERY_NEW_DAYS and not age_covered:
+                c.add("CERT_VERY_NEW", Severity.WARN, "Свежий сертификат",
+                      f"Сертификат выпущен {tls.age_days} дн. назад. "
+                      f"Сертификат получают вместе с доменом, значит и сайт "
+                      f"появился только что",
+                      weight_key="cert_very_new")
+            elif tls.age_days < settings.CERT_NEW_DAYS and not age_covered:
+                c.add("CERT_NEW", Severity.INFO, "Сертификат новый",
+                      f"Сертификату {tls.age_days} дн.",
+                      weight_key="cert_new")
+            elif not tls.expired:
+                # Иначе в одном списке оказывались «просрочен» и
+                # «действующий» — балл верный, объяснение противоречивое.
+                c.ok("CERT_OK", "Сертификат",
+                     f"Действующий сертификат, выпущен {tls.age_days} дн. назад"
+                     + (f", издатель: {tls.issuer}" if tls.issuer else ""))
+    elif tls is not None and tls.handshake_failed and lexical.scheme == "https":
+        c.add("TLS_BROKEN", Severity.WARN, "Защищённое соединение не работает",
+              "Адрес заявлен как https, но установить защищённое соединение "
+              "не удалось",
+              weight_key="tls_broken")
+
+    # ── Уровень 2c: журналы сертификатов ─────────────────────────
+    # Независимая оценка возраста домена. Даём её вес ТОЛЬКО когда
+    # RDAP и WHOIS молчат: иначе один и тот же факт «домен свежий»
+    # засчитывается дважды.
+    if ct is not None and ct.checked:
+        if ct.first_seen_days is not None and not age_known:
+            if ct.first_seen_days < settings.DOMAIN_AGE_VERY_NEW:
+                c.add("CT_FIRST_SEEN_VERY_NEW", Severity.DANGER,
+                      "Домен только появился",
+                      f"Первый сертификат на этот домен выпущен "
+                      f"{ct.first_seen_days} дн. назад. Дату регистрации "
+                      f"узнать не удалось, но журналы сертификатов её выдают",
+                      weight_key="ct_first_seen_very_new")
+            elif ct.first_seen_days < settings.DOMAIN_AGE_NEW:
+                c.add("CT_FIRST_SEEN_NEW", Severity.WARN, "Домен недавний",
+                      f"Первый сертификат выпущен {ct.first_seen_days} дн. назад",
+                      weight_key="ct_first_seen_new")
+            else:
+                c.ok("CT_MATURE", "История домена",
+                     f"В журналах сертификатов домен известен "
+                     f"{ct.first_seen_days} дн.")
+        elif ct.total_certs == 0 and lexical.scheme == "https":
+            # Именно `== 0`, не `not ct.total_certs`: None означает
+            # «ответ не дочитан», а не «сертификатов нет».
+            # У IP-адреса записей в журналах не бывает, а где https не
+            # поднялся вовсе, об этом уже сказал TLS_BROKEN.
+            same_fact = lexical.has_ip_address or (
+                tls is not None and tls.handshake_failed)
+            c.add("CT_NO_RECORDS", Severity.INFO, "Нет в журналах сертификатов",
+                  "На домен никогда не выпускали сертификат, хотя адрес "
+                  "заявлен как https",
+                  weight=0 if same_fact else settings.weight("ct_no_records"))
+
+        elif ct.first_seen_days is not None:
+            if ct.first_seen_days < settings.DOMAIN_AGE_NEW:
+                # Зелёный сигнал про трёхдневный домен рядом с красным
+                # «домен только появился» читается как оправдание.
+                c.add("CT_FIRST_SEEN_NEW", Severity.INFO, "История домена",
+                      f"В журналах сертификатов домен известен всего "
+                      f"{ct.first_seen_days} дн.", weight=0)
+            else:
+                c.ok("CT_CONFIRMS", "История домена",
+                     f"Журналы сертификатов подтверждают: домен известен "
+                     f"{ct.first_seen_days} дн.")
+
+    # Домен для показа человеку: xn--форма верна технически, но
+    # «мвд.рф» читается, а «xn--b1aew.xn--p1ai» — нет.
+    shown_domain = lexical.decoded_host or lexical.registered_domain
+
+    # ── Уровень 5: содержимое страницы ───────────────────────────
+    if page is not None and page.checked:
+        from data.brands import BRAND_DOMAINS, BRAND_SIDE_DOMAINS
+
+        # Бренд заявлен в тексте, но домен ему не принадлежит.
+        foreign_brands = []
+        if page.brands_in_text and (lexical.on_shared_platform
+                                    or not lexical.is_trusted_domain):
+            foreign_brands = [
+                b for b in page.brands_in_text
+                if lexical.registered_domain not in BRAND_DOMAINS.get(b, ())
+            ]
+        # Служебный домен бренда (`vtb-leasing.ru`, `aboutamazon.com`)
+        # говорит от имени своего бренда законно — тот назван в его имени.
+        if lexical.registered_domain in BRAND_SIDE_DOMAINS:
+            own_name = lexical.registered_domain.replace("-", "")
+            foreign_brands = [b for b in foreign_brands if b not in own_name]
+        # Бренд из домена страница видит и в тексте — на своей же
+        # главной он стоит десяток раз. Это тот же факт, что уже
+        # засчитан выше по адресу: `vtb-leasing.ru` получал 55 + 35.
+        brand_from_address = (lexical.brand_match.brand
+                              if lexical.brand_match else None)
+        brand_seen_twice = brand_from_address in foreign_brands
+        if brand_seen_twice:
+            foreign_brands.remove(brand_from_address)
+
+        # Поле пароля и кнопка «войти через Telegram» есть у множества
+        # нормальных сайтов: у форумов, магазинов, сервисов. Сами по
+        # себе они не улика, а описание обычной страницы входа.
+        #
+        # Уликой они становятся рядом с чем-то настоящим: чужим брендом
+        # на странице, формой на сторонний адрес или доменом, заведённым
+        # на прошлой неделе. Тогда кнопка «войти через Telegram»
+        # объясняет, КАК именно уведут аккаунт.
+        #
+        # Без этой оговорки форум с входом через ВК получал 57 баллов,
+        # а молодой стартап — 72, то есть «ОПАСНО». На поимку реального
+        # фишинга признак при этом не влиял никак: в том случае с угоном
+        # Telegram балл был 100 и с ним, и без него.
+        # На чужой площадке возраст берётся у самой площадки: у
+        # `pages.dev` и `telegra.ph` он годами, сколько бы минут ни было
+        # самой странице. Поэтому третье условие там не выполнялось
+        # никогда, и форма пароля вместе с кнопкой «войти через
+        # Telegram» — та самая связка из истории проекта — весили ноль.
+        #
+        # Само размещение на площадке, где публикует кто угодно, здесь
+        # и есть повод отнестись к форме пароля серьёзно.
+        # Сам адрес уже выглядит приманкой: `my-prize-club.ru`,
+        # `golosovanie-za-rebenka.ru`, чужой бренд в имени, бесплатная
+        # зона. Баллов это не добавляет — они начислены выше, — но
+        # снимает презумпцию «обычная страница входа».
+        #
+        # Без этого форма пароля вместе с кнопкой «войти через Telegram»
+        # на своём домене старше недели весила ноль. Это дословно
+        # сценарий из истории проекта, и обрыв на седьмом дне был
+        # отвесный: 6 дней — 100 баллов, 7 дней — 47. Мошенники
+        # домены выдерживают, 40 дней для фишинга обычное дело.
+        address_is_a_lure = bool(
+            lexical.scam_pattern
+            or lexical.keywords_in_host
+            or lexical.brand_match
+            or lexical.suspicious_tld
+        )
+        domain_is_young = (
+            domain_age.checked and domain_age.age_days is not None
+            and domain_age.age_days < settings.DOMAIN_AGE_NEW
+        )
+
+        hard_evidence = (bool(foreign_brands) or bool(page.cross_domain_form)
+                         or lexical.on_shared_platform
+                         or address_is_a_lure or domain_is_young)
+
+        if page.cross_domain_form:
+            c.add("PAGE_CROSS_DOMAIN_FORM", Severity.DANGER,
+                  "Данные уходят на другой сайт",
+                  f"Форма отправляет введённое на посторонний адрес: "
+                  f"{page.cross_domain_form}",
+                  weight_key="page_cross_domain_form")
+
+        if foreign_brands:
+            names = ", ".join(foreign_brands)
+            # На площадке домен НИКОГДА не принадлежит бренду — там
+            # у всех общий адрес. Обвинять за это значит обвинять и
+            # официальный канал Сбербанка в телеграме. Улика — не само
+            # упоминание, а то, что рядом просят данные.
+            only_a_mention = (lexical.on_shared_platform
+                              and not page.cross_domain_form
+                              and not page.has_password_field
+                              and not page.messenger_login)
+            if only_a_mention:
+                c.add("PAGE_BRAND_MISMATCH", Severity.INFO,
+                      "Бренд на чужой площадке",
+                      f"Страница говорит от имени «{names}», а лежит на "
+                      f"{shown_domain} — площадке, где публикует кто угодно. "
+                      f"Это может быть и официальная страница компании, и "
+                      f"подделка: площадка такое не проверяет",
+                      weight=0)
+            else:
+                c.add("PAGE_BRAND_MISMATCH", Severity.DANGER,
+                      "Чужой бренд на странице",
+                      f"Страница выдаёт себя за «{names}», "
+                      f"но домен {shown_domain} этой компании "
+                      f"не принадлежит",
+                      weight_key="page_brand_mismatch")
+        elif brand_seen_twice:
+            c.add("PAGE_BRAND_MISMATCH", Severity.INFO,
+                  "Бренд из адреса — и на странице",
+                  f"Страница тоже говорит от имени «{brand_from_address}». "
+                  f"Это то же, что видно по адресу, отдельно не считаем",
+                  weight=0)
+
+        if page.messenger_login:
+            names = ", ".join(page.messenger_login)
+            if hard_evidence:
+                c.add("PAGE_MESSENGER_LOGIN", Severity.DANGER,
+                      "Вход через мессенджер",
+                      f"Страница предлагает войти через {names}. Именно так "
+                      f"угоняют аккаунты: вы подтверждаете вход, который "
+                      f"запустил не вы",
+                      weight_key="page_messenger_login")
+            else:
+                c.add("PAGE_MESSENGER_LOGIN_OK", Severity.INFO,
+                      "Вход через мессенджер",
+                      f"Страница предлагает войти через {names}. Так делают "
+                      f"и обычные сайты, поэтому сам по себе этот способ "
+                      f"входа ни о чём не говорит",
+                      weight=0)
+
+        if page.has_password_field and (lexical.on_shared_platform
+                                        or not lexical.is_trusted_domain):
+            if hard_evidence:
+                c.add("PAGE_PASSWORD_FORM", Severity.WARN, "Просит пароль",
+                      "На странице есть поле для пароля. Вместе с остальными "
+                      "признаками — повод не вводить ничего",
+                      weight_key="page_password_form")
+            else:
+                c.add("PAGE_PASSWORD_FORM_OK", Severity.INFO, "Просит пароль",
+                      "На странице есть поле для пароля — как на любой "
+                      "странице входа. Ничего подозрительного рядом с ним "
+                      "мы не нашли",
+                      weight=0)
+
+        if page.hidden_input_count >= 3:
+            c.add("PAGE_HIDDEN_INPUTS", Severity.INFO, "Скрытые поля в форме",
+                  f"В форме {page.hidden_input_count} скрытых полей — так "
+                  f"передают метки кампании в массовых рассылках",
+                  weight_key="page_hidden_inputs")
+
+        if not any([page.messenger_login, page.cross_domain_form,
+                    page.has_password_field]):
+            if page.status_code is not None and 200 <= page.status_code < 300:
+                c.ok("PAGE_CLEAN", "Содержимое страницы",
+                     "Форм для ввода паролей и подозрительных кнопок входа нет")
+            else:
+                # При 403 от бот-защиты мы видели заглушку, а не сайт.
+                # Говорить «форм нет» — успокаивать на пустом месте.
+                c.add("PAGE_NOT_SEEN", Severity.INFO, "Страница не показана",
+                      f"Сайт ответил кодом {page.status_code} — "
+                      f"настоящее содержимое проверить не удалось",
+                      weight=0)
+
+    # ── Уровень 3: структура и лексика ───────────────────────────
+    _add_address_signals(c, lexical)
+
+    # Адрес, который человек ВСТАВИЛ, — тоже улика, даже если нас с
+    # него переадресовали на приличный сайт. Маскировка так и работает:
+    # проверяющему отдают настоящий sberbank.ru, жертве — подделку.
+    # Один и тот же признак дважды не считаем: что уже найдено в
+    # конечном адресе, из исходного не добавляется.
+    origin_evidence = False
+    if (origin_lexical is not None and redirects is not None
+            and redirects.changed_domain
+            and not origin_lexical.is_shortener
+            and not origin_lexical.is_trusted_domain):
+        already = {s.code for s in c.signals if s.weight > 0}
+        origin = _SignalCollector()
+        _add_address_signals(origin, origin_lexical)
+        for signal in origin.signals:
+            if (signal.weight > 0 and signal.code in _ORIGIN_NAME_CODES
+                    and signal.code not in already):
+                signal.detail = (f"В исходном адресе ({origin_lexical.host}), "
+                                 f"до переадресации. {signal.detail}")
+                c.signals.append(signal)
+                c.score += signal.weight
+                origin_evidence = True
+
     # ── Уровень 1c: мнение языковой модели ───────────────────────
     # Вес не фиксирован: им СЛУЖИТ сама поправка, уже зажатая в
     # границы конфига внутри ai_analyzer. Скорер к этому числу
@@ -756,8 +866,7 @@ def calculate_risk_score(
         score = max(score, 90)
 
     # Правило 2: неразвёрнутый сокращатель.
-    if (lexical.is_shortener and redirects is not None
-            and not redirects.resolved and not external_hit
+    if (lexical.is_shortener and shortener_unresolved and not external_hit
             and not page_saw_something):
         # Сначала пол, потом потолок: «не знаем» — это подозрение, но
         # не приговор. И потолок доверия здесь не действует: значок
@@ -783,7 +892,8 @@ def calculate_risk_score(
     # Правило 2: потолок доверия (не применяется поверх внешних улик
     # и поверх прямых улик, найденных на самой странице).
     if (lexical.is_trusted_domain and not external_hit
-            and not page_saw_something and trusted_ceiling_applies):
+            and not page_saw_something and not origin_evidence
+            and trusted_ceiling_applies):
         if score > TRUSTED_DOMAIN_SCORE_CAP:
             logger.info("Trusted domain %s: capping score %d → %d",
                         lexical.registered_domain, score, TRUSTED_DOMAIN_SCORE_CAP)

@@ -636,7 +636,7 @@ const W = {
     encoded_host: 25, insecure_scheme: 15, shortener: 10,
     trigger_keywords: 12, trigger_keywords_many: 22, suspicious_tld: 20,
     abused_tld: 10, scam_pattern: 35,
-    digits_in_domain: 10, brand_impersonation: 55, brand_typosquat: 55,
+    digits_in_domain: 0, brand_impersonation: 55, brand_typosquat: 55,
     brand_homograph: 60, domain_age_unknown: 5,
 };
 const TRUSTED_SCORE_CAP = 15;
@@ -1169,6 +1169,8 @@ const MULTI_SUFFIXES = new Set([
     'com.tr','com.mx','com.ar','com.sg','com.hk','com.tw','com.ua','com.pl',
     'gov.ru','edu.ru','org.ru','net.ru','com.ru','ac.ru','msk.ru','spb.ru',
     'gov.kz','com.kz','org.kz',
+    'co.il','org.il','ac.il','gov.il','com.co','gov.ua','org.ua','net.ua','edu.ua',
+    'com.by','com.ge','com.eg','com.pe','com.ec','co.ke',
     'com.ng','com.pk','com.ph','com.vn','co.id','co.th','com.my','com.sa',
     'github.io','gitlab.io','pages.dev','workers.dev','vercel.app',
     'netlify.app','herokuapp.com','web.app','firebaseapp.com',
@@ -1194,32 +1196,33 @@ function splitDomain(host) {
 
 const BRANDS = {
     paypal:['paypal.com','paypal.me','paypalobjects.com'],
-    google:['google.com','google.ru','google.co.uk','google.de','googleapis.com','googleusercontent.com','gstatic.com','youtube.com','youtu.be','goo.gl'],
-    apple:['apple.com','icloud.com','cdn-apple.com'],
-    amazon:['amazon.com','amazon.co.uk','amazon.de','amazon.fr','amazonaws.com','primevideo.com'],
+    google:['goo.gl','google.co.uk','google.com','google.de','google.fr','google.ru','googleapis.com','googleusercontent.com','gstatic.com','withgoogle.com','youtu.be','youtube.com'],
+    apple:['apple.com','apple.news','cdn-apple.com','icloud.com'],
+    amazon:['amazon.co.jp','amazon.co.uk','amazon.com','amazon.de','amazon.fr','amazon.in','amazonaws.com','primevideo.com'],
     facebook:['facebook.com','fb.com','fbcdn.net','messenger.com','meta.com'],
-    microsoft:['microsoft.com','microsoftonline.com','live.com','outlook.com','hotmail.com','office.com','azure.com','windows.com','msn.com','sharepoint.com','xbox.com'],
+    pochta:['pochta.ru','russianpost.ru'],
+    microsoft:['azure.com','hotmail.com','live.com','microsoft.com','microsoftonline.com','msn.com','office.com','office365.com','outlook.com','sharepoint.com','windows.com','xbox.com'],
     netflix:['netflix.com','nflxvideo.net'],
-    tinkoff:['tinkoff.ru','tbank.ru','tinkoff.com'],
-    sberbank:['sberbank.ru','sber.ru','sberbusiness.ru','sberbank.com'],
-    vtb:['vtb.ru','vtb24.ru','vtb.com'],
-    alfabank:['alfabank.ru','alfa-bank.ru','alfabank.com'],
-    gosuslugi:['gosuslugi.ru','esia.gosuslugi.ru'],
-    telegram:['telegram.org','telegram.me','t.me','telegra.ph'],
-    yandex:['yandex.ru','yandex.com','ya.ru','yandex.net','yandex.kz'],
-    instagram:['instagram.com','cdninstagram.com'],
-    vkontakte:['vk.com','vkontakte.ru','vk.cc','userapi.com'],
-    mailru:['mail.ru','bk.ru','list.ru','inbox.ru','imgsmail.ru'],
-    visa:['visa.com','visa.ru','visa.co.uk'],
+    tinkoff:['tbank.ru','tinkoff.com','tinkoff.ru'],
+    sberbank:['sber.ru','sberbank.com','sberbank.ru','sberbusiness.ru'],
+    vtb:['vtb.com','vtb.ru','vtb24.ru'],
+    alfabank:['alfa-bank.ru','alfabank.com','alfabank.ru'],
+    gosuslugi:['esia.gosuslugi.ru','gosuslugi.ru'],
+    telegram:['t.me','telegra.ph','telegram.me','telegram.org'],
+    yandex:['ya.ru','yandex.com','yandex.kz','yandex.net','yandex.ru'],
+    instagram:['cdninstagram.com','instagram.com'],
+    vkontakte:['userapi.com','vk.cc','vk.com','vkontakte.ru'],
+    mailru:['bk.ru','imgsmail.ru','inbox.ru','list.ru','mail.ru'],
+    visa:['visa.co.uk','visa.com','visa.ru'],
     mastercard:['mastercard.com','mastercard.ru'],
-    gazprom:['gazprom.ru','gazprombank.ru','gazprom.com'],
-    raiffeisen:['raiffeisen.ru','raiffeisen.com'],
-    ozon:['ozon.ru','ozon.com','ozonru.net'],
-    wildberries:['wildberries.ru','wb.ru','wildberries.by'],
-    steam:['steampowered.com','steamcommunity.com'],
-    binance:['binance.com','binance.us'],
-    whatsapp:['whatsapp.com','whatsapp.net','wa.me'],
-    linkedin:['linkedin.com','licdn.com','lnkd.in'],
+    gazprom:['gazprom.com','gazprom.ru','gazprombank.ru'],
+    raiffeisen:['raiffeisen.com','raiffeisen.ru','rbinternational.com'],
+    ozon:['ozon.com','ozon.ru','ozonru.net'],
+    wildberries:['wb.ru','wildberries.by','wildberries.ru'],
+    steam:['steamcommunity.com','steampowered.com','valvesoftware.com'],
+    binance:['binance.com','binance.us','bnbchain.org'],
+    whatsapp:['wa.me','whatsapp.com','whatsapp.net'],
+    linkedin:['licdn.com','linkedin.com','lnkd.in'],
     github:['github.com','github.io','githubusercontent.com'],
     dropbox:['dropbox.com','dropboxusercontent.com'],
     avito:['avito.ru','avito.st'],
@@ -1241,6 +1244,7 @@ const BRAND_ALIASES = {
     microsoft: ['msft','майкрософт'],
     ozon: ['ozon','озон'],
     pochta: ['pochta','почта-россии','почтароссии'],
+
     raiffeisen: ['raif','райфайзен','райффайзен'],
     sberbank: ['sber','sberbank','сбер','сбербанк'],
     telegram: ['telegram','tg','телеграм','телеграмм'],
@@ -1257,7 +1261,20 @@ const SHORT_ALIAS_MAX_LEN = 5;
 // ремонтная мастерская, а не банк. Улика не само слово, а приманка
 // рядом: `sber-vhod`, `ozon-bonus`.
 const AMBIGUOUS_ALIASES = new Set(
-    ['alfa','альфа','vk','вк','wb','tg','raif','icloud','pochta']);
+    ['alfa','альфа','vk','вк','wb','tg','raif','icloud','pochta','visa']);
+// Зеркала LURE_WORDS, LOOKALIKE_WORDS и BRAND_SIDE_DOMAINS из
+// backend/data/brands.py — сторожит tests/test_frontend_sync.py.
+const LURE_WORDS = new Set(['auth','pay','premium','find','click','авторизация']);
+const LOOKALIKE_WORDS = new Set(['telegraph','telegraaf','telegraf','telegrafi',
+    'finance','finances','balance','stem','team','stream','steal','steak','seam',
+    'stern','apply','ample','linked','aviso','paypay']);
+const BRAND_SIDE_DOMAINS = new Set(['githubstatus.com','githubassets.com',
+    'microsoft365.com','googlevideo.com','googleadservices.com',
+    'googlesyndication.com','googletagmanager.com','google-analytics.com',
+    'yandex-team.ru','yandex.cloud','yandexcloud.net','aboutamazon.com',
+    'amazontrust.com','steamstatic.com','dropboxstatic.com','facebookmail.com',
+    'vtb-leasing.ru','vtb-bank.kz','sberbank-ast.ru','sberbank-insurance.ru',
+    'gazprom-media.com']);
 
 function keywordsInName(sld, subs) {
     // Поддомен — тоже имя, которое видно в адресной строке. Но один
@@ -1275,38 +1292,72 @@ function needsALure(name, nameParts, cheapZone) {
     if (!AMBIGUOUS_ALIASES.has(name) || cheapZone) return false;
     for (const part of nameParts) {
         if (part === name) continue;
-        KEYWORD_RE.lastIndex = 0;
-        if (KEYWORD_RE.test(part)) return false;
+        if (KEYWORD_SET.has(part) || LURE_WORDS.has(part)) return false;
+    }
+    return true;
+}
+
+// Бренд стоит только ВНУТРИ слова, и приманки рядом нет: `applebees`,
+// `steamdb`. Зеркало _glued_without_a_lure из lexical_analyzer.py.
+function gluedWithoutALure(brand, tokens, cheapZone) {
+    if (tokens.includes(brand) || cheapZone) return false;
+    for (const token of tokens) {
+        if (!token.includes(brand)) continue;
+        const rest = token.split(brand).join(' ').split(' ').filter(Boolean);
+        if (rest.some(p => KEYWORD_SET.has(p) || LURE_WORDS.has(p) || p === 'online')) return false;
     }
     return true;
 }
 
 
 
-const TRUSTED = new Set([...BRAND_OWNED,
-    'wikipedia.org','wikimedia.org','twitter.com','x.com','reddit.com','twitch.tv',
-    'discord.com','ok.ru','rutube.ru','pinterest.com','tiktok.com','spotify.com',
-    'stackoverflow.com','stackexchange.com','gitlab.com','bitbucket.org','npmjs.com',
-    'pypi.org','docker.com','python.org','mozilla.org','cloudflare.com','akamai.com',
-    'stripe.com','cbr.ru','nalog.ru','nalog.gov.ru','mos.ru','government.ru',
-    'kremlin.ru','pfr.gov.ru','sfr.gov.ru','iana.org','icann.org','ietf.org',
-    'zoom.us','slack.com','figma.com','notion.so','trello.com','atlassian.com',
-    'adobe.com','wordpress.com','medium.com','openai.com','anthropic.com','claude.ai',
-    'epicgames.com','roblox.com','minecraft.net','aliexpress.com','ebay.com',
-    'booking.com','airbnb.com','skype.com','viber.com','signal.org','avito.ru',
+// Зеркала MULTI_TENANT_DOMAINS / MULTI_TENANT_HOSTS / TRUSTED_DOMAINS из
+// backend/data/brands.py. Площадка, где публикует кто угодно, потолка
+// доверия не получает — как и на сервере.
+const MULTI_TENANT_DOMAINS = new Set([
+    'amazonaws.com','blogspot.com','firebaseapp.com','github.io',
+    'gitlab.io','glitch.me','googleapis.com','medium.com','narod.ru',
+    'netlify.app','notion.so','pages.dev','replit.dev','sharepoint.com',
+    't.me','telegra.ph','telesco.pe','teletype.in','ucoz.ru','vercel.app',
+    'web.app','weebly.com','wixsite.com','wordpress.com','workers.dev',
 ]);
+const MULTI_TENANT_HOSTS = new Set([
+    '1drv.ms','docs.google.com','drive.google.com',
+    'firebasestorage.googleapis.com','onedrive.live.com','s3.amazonaws.com',
+    'script.google.com','sites.google.com','storage.googleapis.com',
+]);
+const TRUSTED_EXTRA = [
+    'adobe.com','airbnb.com','akamai.com','aliexpress.com','anthropic.com',
+    'atlassian.com','bitbucket.org','booking.com','cbr.ru','claude.ai',
+    'cloudflare.com','digitalocean.com','discord.com','discord.gg',
+    'docker.com','ea.com','ebay.com','epicgames.com','fastly.com',
+    'figma.com','gitlab.com','government.ru','iana.org','icann.org',
+    'ietf.org','kremlin.ru','minecraft.net','mos.ru','mozilla.org',
+    'nalog.gov.ru','nalog.ru','npmjs.com','ok.ru','openai.com','pfr.gov.ru',
+    'pinterest.com','pypi.org','python.org','reddit.com','roblox.com',
+    'rutube.ru','salesforce.com','sfr.gov.ru','signal.org','skype.com',
+    'slack.com','soundcloud.com','spotify.com','stackexchange.com',
+    'stackoverflow.com','stripe.com','tiktok.com','trello.com','twitch.tv',
+    'twitter.com','viber.com','wikimedia.org','wikipedia.org','x.com',
+    'zoom.us',
+];
+const TRUSTED = new Set([...BRAND_OWNED, ...TRUSTED_EXTRA]
+    .filter(d => !MULTI_TENANT_DOMAINS.has(d)));
 
 const SHORTENERS = new Set([
-    'bit.ly','t.co','tinyurl.com','goo.gl','is.gd','cutt.ly','shorturl.at',
-    'rebrand.ly','buff.ly','ow.ly','s.id','rb.gy','short.io','lnkd.in','tiny.cc',
-    'clck.ru','vk.cc','qps.ru','u.to','v.gd','t.ly','dub.sh','youtu.be','amzn.to',
+    'amzn.to','bit.ly','buff.ly','clc.to','clck.ru','cutt.ly','dub.sh',
+    'gg.gg','goo.gl','is.gd','lnkd.in','ow.ly','qps.ru','rb.gy',
+    'rebrand.ly','s.id','short.io','shorturl.at','shrtco.de','surl.li',
+    't.co','t.ly','tiny.cc','tinyurl.com','trib.al','u.to','v.gd','vk.cc',
+    'youtu.be',
 ]);
 
 const SUSPICIOUS_TLDS = new Set([
-    'xyz','tk','ml','ga','cf','gq','top','click','loan','work','date','win',
-    'stream','racing','review','party','download','bid','faith','icu','buzz',
-    'cyou','monster','cfd','sbs','bar','hair','skin','boats','wang','men',
-    'rest','quest','beauty','mom','lol','autos','makeup','zip','mov','kim',
+    'accountant','autos','bar','beauty','bid','boats','buzz','cf','cfd',
+    'click','country','cyou','date','download','faith','ga','gdn','gq',
+    'hair','icu','kim','loan','lol','makeup','men','ml','mom','monster',
+    'mov','party','quest','racing','rest','review','sbs','science','skin',
+    'stream','tk','top','wang','win','work','xyz','zip',
 ]);
 
 // Дешёвые коммерческие зоны: не бесплатные, но массово используются
@@ -1314,34 +1365,39 @@ const SUSPICIOUS_TLDS = new Set([
 // и нормальных сайтов. Зона .shop добавлена после разбора реального
 // промаха: born.playjoy-dash.shop получил за зону ноль баллов.
 const ABUSED_TLDS = new Set([
-    'shop','store','online','site','website','space','fun','live','club',
-    'life','world','today','link','digital','agency','city','host','press',
-    'one','uno','run','shopping','cloud','pics','photo','email','services',
+    'agency','city','cloud','club','digital','email','fun','host','life',
+    'link','live','one','online','photo','pics','press','run','services',
+    'shop','shopping','site','space','store','today','uno','website',
+    'world',
 ]);
 
-const KEYWORDS = ['login','signin','logon','secure','security','verify','verification',
-    'validate','account','update','confirm','banking','bank','recover','recovery',
-    'password','passwd','credential','wallet','prize','winner','bonus','gift',
-    'suspended','limited','unusual','activity','authenticate','authorize',
-    'reactivate','unlock','billing','invoice','payment','refund','webscr','token','otp',
-    'restore','reset','deactivate','expired'];
+const KEYWORDS = [
+    '2fa','account','activity','authenticate','authorization','authorize',
+    'bank','banking','billing','bonus','client','cmd','confirm',
+    'credential','customer','deactivate','expired','gift','id','invoice',
+    'limited','login','logon','otp','passwd','password','payment','prize',
+    'reactivate','recover','recovery','refund','reset','restore','secure',
+    'security','session','signin','support','suspended','token','unlock',
+    'unusual','update','validate','verification','verify','wallet','webscr',
+    'winner',
+];
 
 // Русские слова латиницей и кириллицей. Список был чисто английским —
 // и это дыра размером с рунет: сайт для русскоязычной жертвы пишет
 // `golosovanie` и `deti`, а не `voting` и `children`.
-const KEYWORDS_RU = ['golos','golosovanie','golosovat','golosuy','vote','voting',
-    'konkurs','concurs','reyting','rating','opros',
-    'deti','detskiy','detsad','rebenok','malysh','shkola',
-    'priz','prize','vyigrysh','podarok','podarki','bonus',
-    'vyplata','vyplaty','vozvrat','kompensaciya','posobie','subsidiya',
-    'grant','lotereya','rozygrysh','akciya',
-    'perevod','oplata','karta','koshelek','schet','dengi',
-    'podtverdit','podtverzhdenie','proverka','vhod','voyti','avtorizaciya',
-    'blokirovka','zablokirovan','srochno',
-    'vosstanovit','vosstanovlenie','vosstanovis','dostup',
-    'голос','голосование','конкурс','дети','ребенок','приз','подарок',
-    'выплата','возврат','бонус','вход','подтвердить',
-    'восстановить','восстановление','доступ'];
+const KEYWORDS_RU = [
+    'akciya','avtorizaciya','blokirovka','bonus','concurs','dengi','deti',
+    'detsad','detskiy','dostup','golos','golosovanie','golosovat','golosuy',
+    'grant','karta','kompensaciya','konkurs','koshelek','lotereya','malysh',
+    'oplata','opros','perevod','podarki','podarok','podtverdit',
+    'podtverzhdenie','posobie','priz','prize','progolosovat','progolosuj',
+    'progolosuy','proverka','rating','rebenok','reyting','rozygrysh',
+    'schet','shkola','srochno','subsidiya','vhod','vosstanovis',
+    'vosstanovit','vosstanovlenie','vote','voting','voyti','vozvrat',
+    'vyigrysh','vyplata','vyplaty','zablokirovan','бонус','возврат',
+    'восстановить','восстановление','вход','выплата','голос','голосование',
+    'дети','доступ','конкурс','подарок','подтвердить','приз','ребенок',
+];
 
 /*
    Готовые схемы мошенничества.
@@ -1357,7 +1413,9 @@ const KEYWORDS_RU = ['golos','golosovanie','golosovat','golosuy','vote','voting'
 const SCAM_PATTERNS = [
     { code:'fake_vote',
       a:['golos','golosovani','golosovat','golosuy','vote','voting','konkurs',
-         'concurs','reyting','rating','голос','голосовани','конкурс'],
+         'concurs','reyting','rating','голос','голосовани','конкурс',
+         'progolos','проголос'],
+
       b:['deti','detey','detej','detei','detok','detskiy','detsk','rebenok',
          'rebenka','rebyonka','rebionka','malysh','malysha','detsad','shkola',
          'grant','risunok','talant','kid','kids','child','children','baby',
@@ -1424,7 +1482,9 @@ function matchScamPattern(text) {
 
 // Границы слова «мягкие»: буквы вокруг запрещены, цифры и разделители — нет.
 // Поэтому /secure-login/ и login2.php находятся, а «accountant» — нет.
+const KEYWORD_SET = new Set(KEYWORDS.concat(KEYWORDS_RU));
 const KEYWORD_RE = new RegExp('(?<![a-z])(' +
+
     KEYWORDS.concat(KEYWORDS_RU).sort((a,b)=>b.length-a.length).join('|') + ')(?![a-z])', 'gi');
 
 /* ─── 7. Валидация ввода ──────────────────────────────────────────── */
@@ -1486,17 +1546,65 @@ function normalizeUrl(s) {
     return /^https?:\/\//i.test(v) ? v : 'https://' + v;
 }
 
+// Зеркало _has_redirect_params из backend/pipeline/lexical_analyzer.py:
+// те же два списка имён и те же условия на значение.
+const REDIRECT_NAMES_SURE = new Set(['url','redirect','redirect_uri','redirect_url',
+    'redirect_to','goto','forward','returnurl','returnto','return_to','return_path',
+    'redir','dest','destination','openurl']);
+const REDIRECT_NAMES_MAYBE = new Set(['go','link','return','next','continue','target',
+    'to','back','jump','out','r','u']);
+const BARE_HOST_VALUE_RE = /^([a-z0-9-]+(\.[a-z0-9-]+)*\.(?!(?:pdf|html?|php|aspx?|jsp|js|css|json|xml|txt|csv|jpe?g|png|gif|svg|webp|docx?|xlsx?|zip|rar|mp[34])(?:\/|$))[a-z]{2,})(\/|$)/i;
+
+function hasRedirectParams(search, ownDomain) {
+    const re = /[?&]([a-z_0-9]{1,24})=([^&#]*)/gi;
+    let m;
+    while ((m = re.exec(search)) !== null) {
+        const name = m[1].toLowerCase();
+        let value = m[2];
+        try { value = decodeURIComponent(value); } catch (e) { /* как есть */ }
+        const sure = REDIRECT_NAMES_SURE.has(name);
+        const known = sure || REDIRECT_NAMES_MAYBE.has(name);
+        const addr = /^(https?:)?\/\/([^\/?#\\]+)/i.exec(value);
+        const bare = known ? BARE_HOST_VALUE_RE.exec(value) : null;
+        let target;
+        if (addr) target = addr[2].split('@').pop().split(':')[0];
+        else if (bare) target = bare[1];
+        else if (sure && value) return true;
+        else continue;
+        if (splitDomain(target.toLowerCase()).registered !== ownDomain) return true;
+    }
+    return false;
+}
+
 /* ─── 8. Локальный движок эвристик (офлайн-резерв) ────────────────── */
 
+
 function findBrand(host, sld, registered, subs, displayHost, displaySld) {
+    // Площадка самого бренда (`github.io`, `amazonaws.com`): домен его,
+    // а страницу заводит кто угодно. Чужое имя отдельной меткой
+    // поддомена — подделка; остальное решает содержимое страницы.
+    // То же, что ветка owned_by_brand в lexical_analyzer.py.
+    for (const d of MULTI_TENANT_DOMAINS) {
+        if (!BRAND_OWNED.has(d) || !(host === d || host.endsWith('.' + d))) continue;
+        const labels = host.slice(0, Math.max(0, host.length - d.length - 1)).split('.');
+        for (const brand of BRAND_NAMES) {
+            if (labels.includes(brand)) return { brand, kind:'impersonation' };
+        }
+        return null;
+    }
     if (BRAND_OWNED.has(registered)) return null;
+
+    if (BRAND_SIDE_DOMAINS.has(registered)) return null;
 
     // Имя домена — РОВНО бренд, зона приличная: это сам бренд в другой
     // зоне (`github.blog`, `yandex.by`). Полного списка доменов Google
     // не существует, обвинять их в подделке самих себя нельзя.
     // У `paypal.tk` зона бесплатная — там оговорка не действует.
     const zone = (registered.split('.').pop() || '');
+    // Зона, названная именем бренда (`blog.google`), принадлежит ему целиком.
+    if (BRAND_NAMES.has(zone)) return null;
     const cheapZone = SUSPICIOUS_TLDS.has(zone) || ABUSED_TLDS.has(zone);
+
     // Сверять надо и ASCII-имя, и человеческое, и все написания бренда:
     // иначе `госуслуги.рф` и `vk.company` обвинялись в подделке самих
     // себя — ACE-форма с ключом словаря не совпадает никогда.
@@ -1541,15 +1649,26 @@ function findBrand(host, sld, registered, subs, displayHost, displaySld) {
         if (brand.length >= 4) {
             const max = brand.length <= 4 ? 0 : (brand.length <= 6 ? 1 : 2);
             const dist = levenshtein(canonSld, brand, max);
-            if (dist <= max) {
+            const isAWord = dist > 0 && LOOKALIKE_WORDS.has(humanName);
+            if (dist <= max && !isAWord) {
                 return { brand, kind: (dist > 0 || canonSld !== sld) ? 'typosquat' : 'impersonation' };
             }
         }
-        if (subs.includes(brand)) return { brand, kind:'impersonation' };
-        if (needsALure(brand, nameParts, cheapZone)) continue;
-        if (brand.length >= 5 && (canonSld.includes(brand) || foldedHost.includes(brand))) {
+        if (subs.includes(brand) && !needsALure(brand, new Set([...nameParts, brand]), cheapZone)) {
             return { brand, kind:'impersonation' };
         }
+        if (needsALure(brand, nameParts, cheapZone)) continue;
+        if (brand.length >= 5 && (canonSld.includes(brand) || foldedHost.includes(brand))) {
+            // Склейка прощается только в самом имени сайта: поддомен
+            // чужого домена (`mypaypal.evil.ru`) придумывает владелец.
+            const inSubdomain = subs.some(s => foldHomoglyphs(s).includes(brand));
+            const tokens = [...nameParts].filter(Boolean).map(canonical);
+            if (inSubdomain || !gluedWithoutALure(brand, tokens, cheapZone)) {
+
+                return { brand, kind:'impersonation' };
+            }
+        }
+
     }
     return null;
 }
@@ -1566,7 +1685,7 @@ function engineLocal(rawInput) {
     let path = parsed.pathname + parsed.search;
     try { path = decodeURIComponent(path); } catch (e) { /* битые %XX — ищем как есть */ }
     const { registered, sld, tld, subs } = splitDomain(host);
-    const isTrusted = TRUSTED.has(registered);
+    const isTrusted = TRUSTED.has(registered) && !MULTI_TENANT_HOSTS.has(host);
 
     // «Отображаемый» хост — то, что видит жертва в адресной строке.
     // Для xn--… доменов он отличается от host и только по нему можно
@@ -1699,10 +1818,11 @@ function engineLocal(rawInput) {
     const hyphens = (displayHost.match(/-/g) || []).length;
     if (hyphens > 3)               add('EXCESSIVE_HYPHENS', 'warn', W.excessive_hyphens, hyphens);
 
-    const urlLen = String(rawInput).trim().length;
+    // Сервер меряет адрес уже с дописанным `https://` — меряем так же.
+    const urlLen = normalizeUrl(rawInput).length;
     if (urlLen > 100)              add('LONG_URL', 'info', W.long_url, urlLen);
 
-    if (/[?&](url|redirect|redirect_uri|goto|go|link|forward|return|next|redir|dest|destination|continue|target)=/i.test(parsed.search)) {
+    if (hasRedirectParams(parsed.search, registered)) {
         add('REDIRECT_PARAMS', 'warn', W.redirect_params, '');
     }
 
@@ -1732,7 +1852,12 @@ function engineLocal(rawInput) {
         if (digitsMeanSomething) add('DIGITS_IN_DOMAIN', 'info', W.digits_in_domain, '');
 
         // Связка слов, повторяющая известную схему обмана.
-        const scam = matchScamPattern(path + ' ' + displayHost);
+        // Обе половины связки — в имени сайта; путь идёт в счёт только
+        // в дешёвой зоне (то же условие, что в lexical_analyzer.py):
+        // `/delivery-and-payment/` есть у каждого магазина.
+        const cheapZone = SUSPICIOUS_TLDS.has(lastLabel) || ABUSED_TLDS.has(lastLabel);
+        const scam = matchScamPattern(cheapZone ? path + ' ' + displayHost : displayHost);
+
         if (scam) {
             // Кладём КОД, а не перевод: результат кешируется, и
             // подпись застревала в языке первой проверки.
