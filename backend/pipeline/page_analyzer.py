@@ -100,14 +100,14 @@ def _brand_patterns() -> dict[str, re.Pattern[str]]:
 
 _BRAND_TEXT_RE = _brand_patterns()
 
-# Типы, которые точно не HTML. Всё остальное пробуем разобрать:
-# требовать text/html нельзя, поддельные страницы часто отдаются
-# с типом application/octet-stream или вообще без него.
 # Кодировку называет сам проверяемый сайт. `punycode` написан на чистом
 # питоне и на 256 КБ работает ~10 с, держа GIL: сервер в это время не
 # отвечает никому, и отдельный поток от этого не спасает.
 _SLOW_CODECS = frozenset({"punycode"})
 
+# Типы, которые точно не HTML. Всё остальное пробуем разобрать:
+# требовать text/html нельзя, поддельные страницы часто отдаются
+# с типом application/octet-stream или вообще без него.
 _BINARY_TYPES: tuple[str, ...] = (
     "image/", "video/", "audio/", "font/",
     "application/pdf", "application/zip", "application/x-", "application/gzip",
