@@ -11,12 +11,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import logging
 import re
 from html.parser import HTMLParser
 from typing import Optional
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -25,6 +26,7 @@ from config import settings
 from http_client import get_client
 from models import PageResult
 from net_guard import BlockedTargetError, assert_url_is_safe
+from normalize import join_location
 from url_resolver import REDIRECT_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -194,11 +196,11 @@ def _cross_domain_form(page_url: str, actions: list[str]) -> Optional[str]:
     """
     own = _registrable(urlsplit(page_url).hostname or "")
     for action in actions:
-        # urljoin внутри try: он сам зовёт urlsplit и бросает ValueError
+        # Разбор внутри try: urljoin под ним бросает ValueError
         # на битом action вида "//[" — одна такая форма на странице
         # иначе валит весь уровень.
         try:
-            target = urljoin(page_url, action.strip())
+            target = join_location(page_url, action)
             host = urlsplit(target).hostname
         except ValueError:
             continue
@@ -267,7 +269,7 @@ async def analyze_page(url: str) -> PageResult:
                             return PageResult(checked=False, status_code=status,
                                               error="Редирект без адреса")
                         try:
-                            target = urljoin(current, location.strip())
+                            target = join_location(current, location)
                             scheme = urlsplit(target).scheme.lower()
                         except ValueError:
                             return PageResult(checked=False, status_code=status,
@@ -354,8 +356,18 @@ async def analyze_page(url: str) -> PageResult:
             bytes_read=len(raw),
         )
 
+    async def _fetch_within_deadline() -> PageResult:
+        # PAGE_TIMEOUT у httpx — на одно чтение: сайт, отдающий по байту,
+        # в него не упирается никогда. Дедлайн стоит ВНУТРИ single_flight,
+        # чтобы ждущие тот же адрес получили результат, а не отмену.
+        try:
+            return await asyncio.wait_for(_fetch(), settings.PAGE_TOTAL_TIMEOUT)
+        except asyncio.TimeoutError:
+            return PageResult(checked=False,
+                              error="Страница отвечает слишком медленно")
+
     try:
-        return await _cache.single_flight(cache_key(url), _fetch)
+        return await _cache.single_flight(cache_key(url), _fetch_within_deadline)
     except Exception:                                  # noqa: BLE001
         logger.exception("Page stage failed")
         return PageResult(checked=False, error="Сбой уровня страницы")

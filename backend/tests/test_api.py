@@ -154,8 +154,8 @@ def test_client_taken_from_the_proxy_end_of_the_chain():
     from rate_limit import client_identifier
 
     class _Headers(dict):
-        def get(self, key, default=None):
-            return dict.get(self, key, default)
+        def getlist(self, key):
+            return [self[key]] if key in self else []
 
     class _Request:
         def __init__(self, xff):

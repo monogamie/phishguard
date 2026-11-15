@@ -165,11 +165,9 @@ async def check_tls(url: str) -> TlsResult:
             return TlsResult(checked=False, error="Ошибка проверки сертификата")
         finally:
             if writer is not None:
-                writer.close()
-                try:
-                    await writer.wait_closed()
-                except Exception:                      # noqa: BLE001
-                    pass
+                # abort, а не close + wait_closed: вежливое закрытие TLS
+                # ждёт ответа сервера до 30 с, а сертификат уже у нас.
+                writer.transport.abort()
 
         if cert_dict is None:
             return TlsResult(checked=False, error="Сертификат не разобран")

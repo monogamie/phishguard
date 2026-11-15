@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -15,6 +16,7 @@ from config import settings
 from http_client import get_client
 from models import RedirectInfo
 from net_guard import BlockedTargetError, assert_url_is_safe
+from normalize import join_location
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +120,16 @@ async def resolve_final_url(url: str) -> RedirectInfo:
             info.error = f"Небезопасный адрес назначения: {exc}"
             break
 
-        resp = await _one_hop(client, current)
+        # RESOLVE_HOP_TIMEOUT у httpx — на одно чтение, а не на ответ:
+        # сайт, цедящий заголовки по байту, держал бы нас без конца.
+        try:
+            resp = await asyncio.wait_for(
+                _one_hop(client, current),
+                timeout=max(deadline - time.monotonic(), 0.1),
+            )
+        except asyncio.TimeoutError:
+            info.error = "Превышен общий лимит времени на разворачивание"
+            break
         if resp is None:
             if hop == 0:
                 info.error = "Сайт не отвечает"
@@ -133,10 +144,11 @@ async def resolve_final_url(url: str) -> RedirectInfo:
             info.resolved = True
             break
 
-        # urljoin: обрабатывает и //evil.com/x, и /x, и x. На битом
-        # IPv6-литерале (`//[`) он сам бросает ValueError.
+        # Разбираем как браузер, а не голым urljoin: иначе `/\evil.top`
+        # оставляет нас на исходном сайте, а человека уводит. На битом
+        # IPv6-литерале (`//[`) бросает ValueError.
         try:
-            next_url = urljoin(current, location.strip())
+            next_url = join_location(current, location)
             scheme = urlsplit(next_url).scheme.lower()
         except ValueError:
             info.error = "Некорректный адрес в заголовке Location"
