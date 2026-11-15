@@ -68,7 +68,9 @@ limiter = SlidingWindowRateLimiter(
 def client_identifier(request: Request) -> str:
     """Определяет клиента для учёта лимита."""
     if settings.TRUST_PROXY_HEADERS:
-        forwarded = request.headers.get("x-forwarded-for")
+        # Все строки заголовка, а не первая: прокси вправе прислать свой
+        # адрес отдельной строкой, и тогда первая — целиком от клиента.
+        forwarded = ", ".join(request.headers.getlist("x-forwarded-for"))
         if forwarded:
             # Берём адрес СПРАВА, а не слева. X-Forwarded-For прокси
             # дописывают в конец, поэтому левые значения подставляет сам

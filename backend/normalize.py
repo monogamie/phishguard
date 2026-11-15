@@ -10,7 +10,7 @@ import unicodedata
 
 import idna
 
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 # ── 1. Таблица гомоглифов ────────────────────────────────────────
 # Отображаем «обманчиво похожие» символы в латиницу.
@@ -152,6 +152,41 @@ def normalize_authority(url: str) -> str:
     # Разделитель оказался обратным слешем — заменяем его на прямой,
     # и адресная часть кончается там же, где кончилась бы у браузера.
     return url[:scheme_len] + rest[:cut] + "/" + rest[cut + 1:]
+
+
+def join_location(base: str, location: str) -> str:
+    """
+    Адрес из заголовка `Location`, как его поймёт браузер.
+
+    Голого `urljoin` мало: `/\\evil.top` для него путь на том же сайте,
+    а браузер уходит на `evil.top` — обратный слеш ему тот же разделитель,
+    и лишние слеши перед хостом он съедает. Таблица сверена с Chromium,
+    лежит в `test_fable_review.py`. Бросает ValueError, как `urljoin`.
+    """
+    slashes = "/" + chr(92)
+    # Табуляцию и переводы строк браузер выбрасывает из адреса целиком.
+    loc = location.strip().translate({9: None, 10: None, 13: None})
+
+    head, sep, rest = loc.partition(":")
+    scheme = head.lower()
+    if sep and scheme in ("http", "https"):
+        body = rest.lstrip(slashes)
+        if scheme != urlsplit(base).scheme.lower() or len(rest) - len(body) >= 2:
+            loc = f"{scheme}://{body}"
+        else:
+            # `https:/x` и `https:x` при той же схеме — относительный путь.
+            loc = rest if rest[:1] in tuple(slashes) else "./" + rest
+    if not loc.lower().startswith(_SPECIAL_SCHEMES):
+        body = loc.lstrip(slashes)
+        if len(loc) - len(body) >= 2:
+            loc = "//" + body
+        elif loc[:1] == chr(92):
+            loc = "/" + loc[1:]
+
+    # Абсолютный адрес через urljoin не гоним: тот отвергает логин с
+    # полноширинным слешем раньше, чем его успеют закодировать.
+    joined = loc if loc.lower().startswith(_SPECIAL_SCHEMES) else urljoin(base, loc)
+    return encode_unparseable_userinfo(normalize_authority(joined))
 
 
 def encode_unparseable_userinfo(url: str) -> str:

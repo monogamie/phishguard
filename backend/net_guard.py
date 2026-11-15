@@ -130,7 +130,9 @@ async def assert_url_is_safe(url: str, *, enabled: bool = True,
         if not ip_is_public(addr):
             logger.warning("Blocked SSRF attempt: %s -> %s", host, addr)
             raise BlockedTargetError(
-                f"Host {host!r} resolves to non-public address {addr}"
+                # Сам адрес — только в лог выше: в ответе он превращает
+                # сервис в резолвер внутренних имён хостинга.
+                f"Host {host!r} resolves to a non-public address"
             )
 
 

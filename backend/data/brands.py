@@ -102,6 +102,40 @@ SHORT_ALIAS_MAX_LEN = 5
 # («вход», «бонус», «подтвердить») или зона дешёвая.
 AMBIGUOUS_ALIASES: frozenset[str] = frozenset({
     "alfa", "альфа", "vk", "вк", "wb", "tg", "raif", "icloud", "pochta",
+    # «visa» — ещё и виза: `visa.vfsglobal.com` — визовый центр.
+    "visa",
+})
+
+# Слова-приманки, которые делают короткое написание уликой, но сами
+# по себе веса не имеют (в отличие от тревожных слов): `vk-auth`,
+# `wb-pay`, `tg-premium`, `icloud-find`, `alfa-click`.
+LURE_WORDS: frozenset[str] = frozenset({
+    "auth", "pay", "premium", "find", "click", "авторизация",
+})
+
+# Обычные слова, которые отличаются от бренда на букву-две. Опечаткой
+# их считать нельзя: `telegraph.co.uk` — газета, `finance.ua` — портал.
+LOOKALIKE_WORDS: frozenset[str] = frozenset({
+    "telegraph", "telegraaf", "telegraf", "telegrafi",   # ≈ telegram
+    "finance", "finances", "balance",                    # ≈ binance
+    "stem", "team", "stream", "steal", "steak", "seam", "stern",  # ≈ steam
+    "apply", "ample",                                    # ≈ apple
+    "linked", "aviso",
+    "paypay",                                            # японский платёжный сервис
+})
+
+# Служебные домены самих брендов. Имперсонацией не считаются, но и
+# потолка доверия не получают — поэтому отдельно от BRAND_DOMAINS.
+BRAND_SIDE_DOMAINS: frozenset[str] = frozenset({
+    "githubstatus.com", "githubassets.com", "microsoft365.com",
+    "googlevideo.com", "googleadservices.com", "googlesyndication.com",
+    "googletagmanager.com", "google-analytics.com",
+    "yandex-team.ru", "yandex.cloud", "yandexcloud.net",
+    "aboutamazon.com", "amazontrust.com", "steamstatic.com",
+    "dropboxstatic.com", "facebookmail.com",
+    # Дочерние компании, подтверждены автором 15.11.2026.
+    "vtb-leasing.ru", "vtb-bank.kz", "sberbank-ast.ru",
+    "sberbank-insurance.ru", "gazprom-media.com",
 })
 
 # ── Площадки, где страницу может выложить кто угодно ─────────────
@@ -167,6 +201,9 @@ __all__ = [
     "BRAND_ALIASES",
     "SHORT_ALIAS_MAX_LEN",
     "AMBIGUOUS_ALIASES",
+    "LURE_WORDS",
+    "LOOKALIKE_WORDS",
+    "BRAND_SIDE_DOMAINS",
     "MULTI_TENANT_DOMAINS",
     "MULTI_TENANT_HOSTS",
     "MIN_SUBSTRING_BRAND_LEN",

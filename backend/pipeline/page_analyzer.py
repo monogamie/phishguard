@@ -11,11 +11,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import codecs
 import logging
 import re
 from html.parser import HTMLParser
 from typing import Optional
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -24,6 +26,7 @@ from config import settings
 from http_client import get_client
 from models import PageResult
 from net_guard import BlockedTargetError, assert_url_is_safe
+from normalize import join_location
 from url_resolver import REDIRECT_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -99,6 +102,11 @@ def _brand_patterns() -> dict[str, re.Pattern[str]]:
 
 _BRAND_TEXT_RE = _brand_patterns()
 
+# Кодировку называет сам проверяемый сайт. `punycode` написан на чистом
+# питоне и на 256 КБ работает ~10 с, держа GIL: сервер в это время не
+# отвечает никому, и отдельный поток от этого не спасает.
+_SLOW_CODECS = frozenset({"punycode"})
+
 # Типы, которые точно не HTML. Всё остальное пробуем разобрать:
 # требовать text/html нельзя, поддельные страницы часто отдаются
 # с типом application/octet-stream или вообще без него.
@@ -120,6 +128,11 @@ class _PageParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.title_parts: list[str] = []
         self.text_parts: list[str] = []
+        # Текст ВНЕ ссылок и кнопок. Заголовки новостей и кнопки
+        # «Войти через Яндекс», «Мы в Telegram» — это ссылки; страница
+        # в них называет чужой бренд, а не выдаёт себя за него.
+        self.own_text_parts: list[str] = []
+        self._in_link = False
         self.form_actions: list[str] = []
         self.has_password = False
         self.hidden_inputs = 0
@@ -130,6 +143,8 @@ class _PageParser(HTMLParser):
     def handle_starttag(self, tag: str,
                         attrs: list[tuple[str, Optional[str]]]) -> None:
         attr = {k.lower(): (v or "") for k, v in attrs}
+        if tag in ("a", "button"):
+            self._in_link = True
         if tag == "title":
             self._in_title = True
         elif tag in ("script", "style"):
@@ -153,6 +168,8 @@ class _PageParser(HTMLParser):
                     self.text_parts.append(attr[key])
 
     def handle_endtag(self, tag: str) -> None:
+        if tag in ("a", "button"):
+            self._in_link = False
         if tag == "title":
             self._in_title = False
         elif tag in ("script", "style") and self._skip_depth:
@@ -166,6 +183,8 @@ class _PageParser(HTMLParser):
         stripped = data.strip()
         if stripped:
             self.text_parts.append(stripped)
+            if not self._in_link:
+                self.own_text_parts.append(stripped)
 
     # HTMLParser по умолчанию падает на битой разметке в строгом режиме;
     # мошеннические страницы битые часто, поэтому ошибки глотаем.
@@ -188,11 +207,11 @@ def _cross_domain_form(page_url: str, actions: list[str]) -> Optional[str]:
     """
     own = _registrable(urlsplit(page_url).hostname or "")
     for action in actions:
-        # urljoin внутри try: он сам зовёт urlsplit и бросает ValueError
+        # Разбор внутри try: urljoin под ним бросает ValueError
         # на битом action вида "//[" — одна такая форма на странице
         # иначе валит весь уровень.
         try:
-            target = urljoin(page_url, action.strip())
+            target = join_location(page_url, action)
             host = urlsplit(target).hostname
         except ValueError:
             continue
@@ -261,7 +280,7 @@ async def analyze_page(url: str) -> PageResult:
                             return PageResult(checked=False, status_code=status,
                                               error="Редирект без адреса")
                         try:
-                            target = urljoin(current, location.strip())
+                            target = join_location(current, location)
                             scheme = urlsplit(target).scheme.lower()
                         except ValueError:
                             return PageResult(checked=False, status_code=status,
@@ -309,6 +328,8 @@ async def analyze_page(url: str) -> PageResult:
                               error="Слишком много редиректов")
 
         try:
+            if codecs.lookup(encoding).name in _SLOW_CODECS:
+                encoding = "utf-8"
             html = raw.decode(encoding, errors="replace")
         except (LookupError, UnicodeDecodeError):
             html = raw.decode("utf-8", errors="replace")
@@ -340,14 +361,24 @@ async def analyze_page(url: str) -> PageResult:
             has_password_field=parser.has_password,
             messenger_login=messengers,
             cross_domain_form=_cross_domain_form(current, parser.form_actions),
-            brands_in_text=_brands_in_text(text),
+            brands_in_text=_brands_in_text(" ".join(parser.own_text_parts)),
             hidden_input_count=parser.hidden_inputs,
             form_count=parser.form_count,
             bytes_read=len(raw),
         )
 
+    async def _fetch_within_deadline() -> PageResult:
+        # PAGE_TIMEOUT у httpx — на одно чтение: сайт, отдающий по байту,
+        # в него не упирается никогда. Дедлайн стоит ВНУТРИ single_flight,
+        # чтобы ждущие тот же адрес получили результат, а не отмену.
+        try:
+            return await asyncio.wait_for(_fetch(), settings.PAGE_TOTAL_TIMEOUT)
+        except asyncio.TimeoutError:
+            return PageResult(checked=False,
+                              error="Страница отвечает слишком медленно")
+
     try:
-        return await _cache.single_flight(cache_key(url), _fetch)
+        return await _cache.single_flight(cache_key(url), _fetch_within_deadline)
     except Exception:                                  # noqa: BLE001
         logger.exception("Page stage failed")
         return PageResult(checked=False, error="Сбой уровня страницы")

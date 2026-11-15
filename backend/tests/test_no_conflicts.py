@@ -67,7 +67,7 @@ ONE_FACT = [
      dict(domain_age=DomainAgeResult(checked=False, error="нет данных"),
           tls=TlsResult(checked=True, age_days=3, covers_domain=True, issuer="LE"),
           ct=CtResult(checked=True, first_seen_days=3, total_certs=1)),
-     {"CT_FIRST_SEEN_VERY_NEW", "DOMAIN_AGE_UNKNOWN"}),
+     {"CT_FIRST_SEEN_VERY_NEW"}),
 
     ("домен свежий, молчат все — остаётся сертификат",
      dict(domain_age=DomainAgeResult(checked=False, error="нет данных"),
@@ -417,3 +417,36 @@ def test_an_unopened_short_link_is_never_safe(url):
     assert not any(s.code == "TRUSTED_DOMAIN" for s in result.signals), (
         "значок «известный домен» рядом с «куда ведёт — неизвестно»"
     )
+
+
+def _brand_page(*brands):
+    return PageResult(checked=True, status_code=200, form_count=1,
+                      brands_in_text=list(brands), bytes_read=5000)
+
+
+def test_brand_in_address_and_on_page_is_one_fact():
+    """`vtb-leasing.ru` получал 55 за бренд в адресе и ещё 35 за тот же
+    бренд в тексте — 90 и «ОПАСНО» честной дочке ВТБ. Её саму теперь
+    знает список служебных доменов, механизм проверяем на чужом."""
+    r = _score(url="https://vtb-kabinet.ru/", page=_brand_page("vtb"))
+    assert _weighted(r) == {"BRAND_IMPERSONATION"}
+    shown = [s for s in r.signals if s.code == "PAGE_BRAND_MISMATCH"]
+    assert shown and shown[0].weight == 0
+
+
+def test_other_brand_on_page_is_a_second_fact():
+    r = _score(url="https://vtb-kabinet.ru/", page=_brand_page("vtb", "sberbank"))
+    assert _weighted(r) == {"BRAND_IMPERSONATION", "PAGE_BRAND_MISMATCH"}
+    detail = next(s.detail for s in r.signals if s.code == "PAGE_BRAND_MISMATCH")
+    assert "«sberbank»" in detail
+
+
+@pytest.mark.parametrize("url,brand", [
+    ("https://vtb-leasing.ru/", "vtb"),
+    ("https://aboutamazon.com/", "amazon"),
+    ("https://www.githubstatus.com/", "github"),
+])
+def test_brand_side_domain_may_speak_for_its_brand(url, brand):
+    """Служебный домен бренда больше не обвиняется по адресу, и уровень
+    страницы не должен обвинять его вместо этого за свой же бренд."""
+    assert _weighted(_score(url=url, page=_brand_page(brand))) == set()

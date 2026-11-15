@@ -20,6 +20,9 @@ from data.brands import (
     MULTI_TENANT_HOSTS,
     SHORT_ALIAS_MAX_LEN,
     AMBIGUOUS_ALIASES,
+    BRAND_SIDE_DOMAINS,
+    LOOKALIKE_WORDS,
+    LURE_WORDS,
     MIN_SUBSTRING_BRAND_LEN,
     TRUSTED_DOMAINS,
 )
@@ -75,6 +78,7 @@ _TRIGGER_KEYWORDS: frozenset[str] = frozenset({
 _TRIGGER_KEYWORDS_RU: frozenset[str] = frozenset({
     # голосование и конкурсы — самая частая схема угона Telegram
     "golos", "golosovanie", "golosovat", "golosuy", "vote", "voting",
+    "progolosuy", "progolosuj", "progolosovat",
     "konkurs", "concurs", "reyting", "rating", "opros",
     # «детский» антураж, вызывающий доверие
     "deti", "detskiy", "detsad", "rebenok", "malysh", "shkola",
@@ -128,21 +132,58 @@ _SHORTENER_DOMAINS: frozenset[str] = frozenset({
 # имени ИЛИ значению, которое само похоже на адрес. Одного имени мало
 # (список никогда не полон: `to=`, `back=`, `jump=` и десяток местных),
 # а одного значения — опасно: `?q=https://...` бывает у поиска.
-_REDIRECT_PARAM_NAMES = re.compile(
-    r"(?i)[?&](url|redirect|redirect_uri|redirect_url|redirect_to|goto|go|"
-    r"link|forward|return|returnurl|returnto|return_to|return_path|next|"
-    r"redir|dest|destination|continue|target|to|back|jump|openurl|out|r|u)=",
-)
-# Значение, которое само является адресом: `?anything=https://evil.top`
-# или его процент-кодированная форма `?x=https%3A%2F%2Fevil.top`.
-_REDIRECT_PARAM_VALUES = re.compile(
-    r"(?i)[?&][a-z_0-9]{1,24}=(https?(://|%3a%2f%2f)|%2f%2f)",
-)
+# Имена, которые ничем, кроме переадресации, не бывают: им верим с
+# любым значением (адрес часто прячут в base64).
+_REDIRECT_NAMES_SURE: frozenset[str] = frozenset({
+    "url", "redirect", "redirect_uri", "redirect_url", "redirect_to",
+    "goto", "forward", "returnurl", "returnto", "return_to",
+    "return_path", "redir", "dest", "destination", "openurl",
+})
+# А эти — ещё и обычные слова: `?to=LED` у поиска билетов, `?next=3` у
+# листалки, `?target=_blank`. Считаются, только если значение — адрес.
+_REDIRECT_NAMES_MAYBE: frozenset[str] = frozenset({
+    "go", "link", "return", "next", "continue", "target", "to", "back",
+    "jump", "out", "r", "u",
+})
+_QUERY_PARAM_RE = re.compile(r"(?i)[?&]([a-z_0-9]{1,24})=([^&#]*)")
+# Значение, которое само является адресом: `https://evil.top`, `//evil.top`.
+_ADDRESS_VALUE_RE = re.compile(r"(?i)^(https?:)?//([^/?#\\]+)")
+# Адрес без схемы: `evil.top/vhod`. Только для знакомых имён.
+# `?link=doc.pdf` — файл, а не сайт.
+_BARE_HOST_VALUE_RE = re.compile(
+    r"(?i)^([a-z0-9-]+(\.[a-z0-9-]+)*\.(?!(?:pdf|html?|php|aspx?|jsp|js|css|"
+    r"json|xml|txt|csv|jpe?g|png|gif|svg|webp|docx?|xlsx?|zip|rar|mp[34])(?:/|$))"
+    r"[a-z]{2,})(/|$)")
 
 
-def _has_redirect_params(raw: str) -> bool:
-    return bool(_REDIRECT_PARAM_NAMES.search(raw)
-                or _REDIRECT_PARAM_VALUES.search(raw))
+def _has_redirect_params(raw: str, own_domain: str = "") -> bool:
+    """
+    Есть ли в адресе параметр, уводящий на ДРУГОЙ сайт.
+
+    Возврат на свой же домен (`account.bbc.com/auth?ptrt=https://www.bbc.com/`)
+    — обычное устройство страницы входа, а не трамплин.
+    """
+    for name, value in _QUERY_PARAM_RE.findall(raw):
+        name = name.lower()
+        try:
+            value = unquote(value)
+        except Exception:                              # noqa: BLE001
+            pass
+        known = name in _REDIRECT_NAMES_SURE or name in _REDIRECT_NAMES_MAYBE
+        found = _ADDRESS_VALUE_RE.match(value)
+        if found:
+            target = found.group(2).rpartition("@")[2].split(":")[0]
+        elif known and _BARE_HOST_VALUE_RE.match(value):
+            target = _BARE_HOST_VALUE_RE.match(value).group(1)
+        elif name in _REDIRECT_NAMES_SURE and value:
+            return True
+        else:
+            continue
+        ext = _extract(target.lower())
+        target_domain = f"{ext.domain}.{ext.suffix}".lower() if ext.suffix else target.lower()
+        if not own_domain or target_domain != own_domain:
+            return True
+    return False
 
 # Процентное кодирование.
 _PERCENT_ENCODED_RE = re.compile(r"%[0-9a-fA-F]{2}")
@@ -174,9 +215,12 @@ _SCAM_PATTERNS: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
     # «голосование» стояли в обеих, схему поднимало одно слово, и
     # `культура.рф/конкурс` получала 72 балла и «ОПАСНО».
     ("fake_vote",
+     # «Проголосуй» — с приставкой: левая граница слова не пускает
+     # «про-» к «голос», а приманку пишут именно в повелительном.
      frozenset({"golos", "golosovani", "golosovat", "golosuy", "vote",
                 "voting", "konkurs", "concurs", "reyting", "rating",
-                "голос", "голосовани", "конкурс"}),
+                "голос", "голосовани", "конкурс",
+                "progolos", "проголос"}),
      # Формы, а не только именительный падеж: в живых адресах пишут
      # «za-rebenka», «detey», «конкурс-детей». Ровно та ссылка, из-за
      # которой проект появился, не ловилась именно поэтому.
@@ -252,7 +296,8 @@ _SCAM_PATTERNS_RE = tuple(
 )
 
 
-def _match_scam_pattern(text: str) -> Optional[str]:
+def _match_scam_pattern(host: str, path: str = "",
+                        zone_is_cheap: bool = False) -> Optional[str]:
     """
     Возвращает код схемы, если в адресе сошлись слова из обеих групп.
 
@@ -260,10 +305,15 @@ def _match_scam_pattern(text: str) -> Optional[str]:
     слов: слова второй группы («оформить», «получить», «налог») сами
     по себе безобидны и в списке тревожных им не место, но в связке
     с первой группой они и образуют узнаваемую схему.
+
+    Обе половины связки должны стоять в ИМЕНИ сайта. Путь идёт в счёт
+    только в дешёвой зоне: `/delivery-and-payment/` — это раздел
+    «Доставка и оплата» любого магазина, а `x.top/golosuy-za-malysha`
+    — одноразовый домен, у которого приманка только в пути и бывает.
     """
-    lowered = text.lower()
+    where = f"{path} {host}".lower() if zone_is_cheap else host.lower()
     for code, group_a, group_b in _SCAM_PATTERNS_RE:
-        if group_a.search(lowered) and group_b.search(lowered):
+        if group_a.search(where) and group_b.search(where):
             return code
     return None
 
@@ -280,7 +330,38 @@ def _needs_a_lure(name: str, name_parts: set[str], zone_is_cheap: bool) -> bool:
     if name not in AMBIGUOUS_ALIASES or zone_is_cheap:
         return False
     rest = name_parts - {name}
-    return not any(part in _TRIGGER_KEYWORDS_ALL for part in rest)
+    return not any(part in _TRIGGER_KEYWORDS_ALL or part in LURE_WORDS
+                   for part in rest)
+
+
+def _glued_without_a_lure(brand: str, tokens: list[str],
+                          zone_is_cheap: bool) -> bool:
+    """
+    True, если бренд стоит только ВНУТРИ слова и приманки рядом нет.
+
+    `applebees`, `steamdb`, `googlewatchblog` — обычные названия, где
+    бренд оказался частью слова. А `paypalsecure`, `sberbankonline`
+    склеены нарочно: остаток слова — приманка. Отдельной частью между
+    дефисами и точками (`secure-paypal`, `paypal.com.evil.ru`) бренд
+    считается как раньше.
+    """
+    if brand in tokens or zone_is_cheap:
+        return False
+    # Имена собственных сайтов бренда длиннее самого бренда:
+    # `steamcommunity`, `steampowered`. Слово, похожее на такое имя, —
+    # опечатка в нём, а не случайность: `steamcommunlty.com`.
+    own_names = {d.split(".")[0] for d in BRAND_DOMAINS.get(brand, ())}
+    own_names = {n for n in own_names if len(n) > len(brand)}
+    for token in tokens:
+        if brand not in token:
+            continue
+        if any(levenshtein(token, n, max_distance=2) <= 2 for n in own_names):
+            return False
+        rest = token.replace(brand, " ").split()
+        if any(piece in _TRIGGER_KEYWORDS_ALL or piece in LURE_WORDS
+               or piece == "online" for piece in rest):
+            return False
+    return True
 
 
 class LexicalAnalyzer:
@@ -412,7 +493,7 @@ class LexicalAnalyzer:
             has_mixed_scripts     = self._has_mixed_scripts(decoded_host),
             has_non_standard_port = self._is_non_standard_port(port, scheme, port_malformed),
             has_encoded_host      = has_encoded_host or has_encoded_userinfo,
-            has_redirect_params   = _has_redirect_params(raw),
+            has_redirect_params   = _has_redirect_params(raw, registered_domain),
             has_digits_in_domain  = digits_mean_something,
             is_insecure_scheme    = scheme == "http",
             is_shortener          = registered_domain in _SHORTENER_DOMAINS,
@@ -424,7 +505,9 @@ class LexicalAnalyzer:
             keywords_in_host      = self._keywords_in_host(sld_human, subdomains, is_trusted),
             scam_pattern          = (None if is_trusted else
                                      _match_scam_pattern(
-                                         f"{path_and_query} {decoded_host}")),
+                                         decoded_host, path_and_query,
+                                         self._is_suspicious_tld(suffix)
+                                         or self._is_abused_tld(suffix))),
             suspicious_tld        = self._is_suspicious_tld(suffix),
             abused_tld            = self._is_abused_tld(suffix),
             is_trusted_domain     = is_trusted,
@@ -595,6 +678,8 @@ class LexicalAnalyzer:
         # не опознавался как подделка ни по одной.
         owned_by_brand = any(registered_domain in domains
                              for domains in BRAND_DOMAINS.values())
+        if registered_domain in BRAND_SIDE_DOMAINS:
+            return None
         if owned_by_brand:
             if registered_domain in MULTI_TENANT_DOMAINS:
                 for brand in BRAND_DOMAINS:
@@ -603,6 +688,11 @@ class LexicalAnalyzer:
                             brand=brand, kind="impersonation",
                             evidence=f"поддомен «{brand}» на площадке "
                                      f"{registered_domain}")
+            return None
+
+        # Зона, названная именем бренда (`blog.google`, `cloud.microsoft`),
+        # принадлежит ему целиком: чужой там домен не заведёт.
+        if suffix.split(".")[-1] in BRAND_DOMAINS:
             return None
 
         folded_host = fold_homoglyphs(decoded_host or host)
@@ -654,7 +744,8 @@ class LexicalAnalyzer:
             if len(brand) >= 4:
                 max_distance = 0 if len(brand) <= 4 else (1 if len(brand) <= 6 else 2)
                 distance = levenshtein(canon_sld, brand, max_distance=max_distance)
-                if distance <= max_distance:
+                is_a_word = distance > 0 and human_name in LOOKALIKE_WORDS
+                if distance <= max_distance and not is_a_word:
                     kind = "typosquat" if distance > 0 or canon_sld != sld else "impersonation"
                     return BrandMatch(
                         brand=brand,
@@ -663,7 +754,8 @@ class LexicalAnalyzer:
                     )
 
             # 3. Бренд как отдельная метка поддомена.
-            if brand in subdomains:
+            if brand in subdomains and not _needs_a_lure(
+                    brand, name_parts | {brand}, zone_is_cheap):
                 return BrandMatch(
                     brand=brand,
                     kind="impersonation",
@@ -698,7 +790,15 @@ class LexicalAnalyzer:
             if len(brand) >= MIN_SUBSTRING_BRAND_LEN:
                 if _needs_a_lure(brand, name_parts, zone_is_cheap):
                     continue
-                if brand in canon_sld or brand in folded_host:
+                # Склейка прощается только в самом имени сайта. Бренд в
+                # поддомене чужого домена (`mypaypal.evil.ru`) случайным
+                # не бывает: поддомен придумывает владелец.
+                in_subdomain = any(brand in fold_homoglyphs(s) for s in subdomains)
+                tokens = [canonical(p) for p in name_parts if p]
+                if in_subdomain or (
+                        (brand in canon_sld or brand in folded_host)
+                        and not _glued_without_a_lure(brand, tokens,
+                                                      zone_is_cheap)):
                     return BrandMatch(
                         brand=brand,
                         kind="impersonation",

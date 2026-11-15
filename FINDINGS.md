@@ -1,751 +1,583 @@
-# Находки агентов — 19–20 сентября 2026
+# Находки агентов — 24 октября 2026 (третья охота)
 
-**Сеть:** открыта. Живой сайт отвечает, `crt.sh` и RDAP доступны напрямую.
-**Агентов запущено:** 4 по новым зонам + пятую зону (пороги) вёл я сам.
-**Уровней реально работало:** 7 из 8, выключен только Claude (ключ не задан) — уровень помечен `skipped` и в достоверность не идёт, это правильно.
-**Тестов на старте и на финише:** 385 passed.
-**Ничего не чинилось:** да. Ни одной правки в файлах проекта.
+**Сеть:** открыта. Живой сайт отвечает (`/health` → 1.1.0, на бою стоит актуальный main: возраст «18 лет» словами, `/scan/stream` работает).
+**Агентов запущено:** 5 — поток на сервере, страница против сервера, интерфейс ожидания, веса 20 сентября, бой против локального.
+**Уровней реально работало:** на бою 7 из 8 (Claude выключен, ключа нет — известно). Локально TLS врёт из-за подменного прокси контейнера (издатель «Anthropic», возраст 0) — локальный TLS с боем НЕ сравнивать.
+**Тестов на старте:** 513 passed. Ни одна находка ниже существующими тестами не ловится.
+**Ничего не чинилось:** да.
 
-## Что покрыто
+Скретчпад агентов эфемерный и до рабочей сессии не доживёт, поэтому команды ниже по возможности самодостаточные: `curl` на бой или короткий питон из `backend/`. Для браузерных — шаги.
 
-| Зона | Статус |
-|------|--------|
-| 1. Регрессии на правках 19 сентября | **покрыто**, 9 находок |
-| 3. Настольная вёрстка без Tailwind | **покрыто**, поэлементная опись |
-| 4. Страница против сервера на кривом вводе | **покрыто**, 166 адресов, 34 расхождения |
-| 5. Пороги и пары признаков | **покрыто** мной, 4 находки |
-| 2. Живой сайт | **частично** — агента убил лимит сессии, точечные проверки я добил сам |
+Офлайн-стенд для лексики (используется в нескольких находках), сохранить как `/tmp/offline.py` и запускать из `backend/`:
 
-**18 находок**, каждая перепроверена мной запуском. Где цифры агента расходились с моими — в файле стоят мои.
-
-## Самое срочное, если времени мало
-
-1. **F-01** — сервер выносит разные вердикты одному домену в зависимости от написания. Сломан декодер punycode, и распознавание бренда отваливается от одного подменённого символа.
-2. **F-02** — `お名前.com`, крупнейший регистратор доменов Японии, получает 75 и красное «Не переходите». Любой японский домен тоже.
-3. **F-03** — `госуслуги.рф` помечен как подделка под самого себя, 45 «ПОДОЗРИТЕЛЬНО».
-4. **F-05** — схема из истории проекта перестала ловиться кириллицей: `детский-конкурс.рф/голосование` → 27 «БЕЗОПАСНО».
-5. **F-06** — тревожные слова в поддомене и в пути весят ноль.
-
-Первые три — ложные тревоги, а по философии проекта они хуже пропусков. Четвёртая и пятая — пропуски ровно того, ради чего сервис делался.
+```python
+import sys, logging; sys.path.insert(0, '.'); logging.disable(logging.CRITICAL)
+from models import *
+from pipeline.lexical_analyzer import lexical_analyzer
+from pipeline.scorer import calculate_risk_score
+def run(u, age):
+    lex = lexical_analyzer.analyze(u)
+    da = DomainAgeResult(checked=True, age_days=4000) if age else DomainAgeResult(checked=False, error="x")
+    r = calculate_risk_score(url=u, original_url=u, gsb=ThreatIntelResult(checked=True),
+        reputation=ReputationResult(checked=True), domain_age=da, lexical=lex,
+        tls=TlsResult(checked=True, age_days=120, covers_domain=True))
+    return r.risk_score, r.verdict.value, [(s.code, s.weight) for s in r.signals if s.weight]
+for u in sys.argv[1:]:
+    print(f"{u:35}", "зрелый:", run(u, True)[:2], "| реестр молчит:", run(u, False))
+```
 
 ## Сводка
 
 | № | Зона | Коротко | Серьёзность | Проверил сам |
 |---|------|---------|-------------|--------------|
-| F-01 | два движка | сервер сам себе противоречит: один домен в двух написаниях даёт 45 и 10 | **критическая** | да |
-| F-02 | два движка | `お名前.com` и любой японский домен → 75 «ОПАСНО» | высокая | да |
-| F-03 | регрессии | `госуслуги.рф`, `сбербанк.рф`, `vk.company` → 45 «ПОДОЗРИТЕЛЬНО» | высокая | да |
-| F-04 | регрессии | честные фирмы под короткие синонимы: `alfa-remont.ru`, `wb-group.ru` → 45 | высокая | да |
-| F-05 | регрессии | схема голосования кириллицей больше не ловится → 27 SAFE | высокая | да |
-| F-06 | регрессии | тревожные слова в поддомене и в пути весят ноль | высокая | да |
-| F-07 | пороги | «поле пароля + вход через Telegram» вместе весят ноль | высокая | да |
-| F-08 | регрессии | `bit.ly`: сервер 35 «подозрительно», страница 10 «безопасно» | высокая | да |
-| F-09 | вёрстка | без Tailwind десктоп нечитаем: чёрное на чёрном, кольцо балла на весь экран | высокая | да |
-| F-10 | два движка | подделку под Microsoft видит страница (100), а сервер нет (30) | высокая | да |
-| F-11 | регрессии | поле пароля снимает потолок доверия: `login.microsoftonline.com` 15 → 35 | средняя | да |
-| F-12 | регрессии | официальный канал бренда на площадке: `t.me/sberbank` → 35 | средняя | да |
-| F-13 | пороги | `MIXED_SCRIPTS` + `PUNYCODE` — двойной счёт одного факта | средняя | да |
-| F-14 | пороги | бренд в чужом домене сам по себе никогда не даёт «ОПАСНО» (потолок 57) | средняя | да |
-| F-15 | два движка | IPv6: страница 40, сервер отказывает с бессмысленным текстом | средняя | да |
-| F-16 | регрессии | `https:\evil.top/` — отказ с враньём в тексте, браузер адрес открывает | средняя | да |
-| F-17 | пороги | структурный шум складывается в приговор без единой улики обмана | низкая | да |
-| F-18 | живой сайт | `t.me` и `telegra.ph` в бою помечены из-за **трёх** ссылок в базе вредоносов | высокая | да, на живом сайте |
+| G-01 | бой | TLS висит 30 с на закрытии → `login.microsoftonline.com` даёт 504, вердикта нет | высокая | да, бой + локально |
+| G-02 | веса | бренд 55 + любая мелочь = «ОПАСНО» честным сайтам (`githubstatus.com` 65, `microsoft365.com`, `yandex.cloud`) | высокая | да, бой + офлайн |
+| G-03 | веса | бренд считается дважды: в домене и в тексте страницы (`vtb-leasing.ru` 90, `aboutamazon.com` 90) | высокая | да, бой |
+| G-04 | ложные тревоги | новостные сайты «выдают себя за бренд» по упоминаниям (`3dnews.ru` 45, `habr.com` 35, `pikabu.ru` 90) | высокая | да, бой + локально |
+| G-05 | интерфейс | поток замолчал после заголовков → кнопка заблокирована навсегда | высокая | да, Playwright |
+| G-06 | сервер | ответ 429 без CORS → страница пишет «Сервер недоступен» и считает локально | высокая | да |
+| G-07 | интерфейс | ошибка внутри потока (504) → вторая полная проверка, ожидание ×2, ложное «Сервер недоступен» | средняя | да, код + Playwright агента |
+| G-08 | интерфейс | локальный (аварийный) вердикт кешируется в браузере на 15 минут | средняя | да, нашёл сам |
+| G-09 | пропуски | схема из истории проекта: `проголосуй-за-ребенка.рф` → 12 «БЕЗОПАСНО» | средняя | да, нашёл сам |
+| G-10 | веса | поле пароля на честной странице входа бренда +20 (`yandex-team.ru` 100) | средняя | да, бой |
+| G-11 | ложные тревоги | опечаточный детектор ловит обычные слова (`telegraph.co.uk`, `finance.ua` 55) | средняя | да, бой |
+| G-12 | ложные тревоги | бренд ищется подстрокой (`applebees.com`, `steamdb.info` 55, `googleadservices.com` 75) | средняя | да, бой + офлайн |
+| G-13 | ложные тревоги | `visa.vfsglobal.com` (визовые центры) — «подделка под Visa», 55 | средняя | да, бой |
+| G-14 | пропуски | `AMBIGUOUS_ALIASES` пропускает `vk-auth.ru`, `alfa-click.ru`, `wb-pay.ru` — 0 баллов | средняя | да, офлайн |
+| G-15 | сервер | упавший элемент `/batch` = `risk_score 0` | средняя | да, бой |
+| G-16 | сервер | одна старая запись в URLhaus на хост — 45 навсегда (`example.org`) | средняя | балл да, причина по коду |
+| G-17 | ложные тревоги | `www.spbu.ru` 40 «ПОДОЗРИТЕЛЬНО» из-за `PAGE_CROSS_DOMAIN_FORM` | средняя | да, бой; причину не разбирали |
+| G-18 | поток | второй одновременный поток того же адреса не получает ни одного `stage` | средняя | да |
+| G-19 | интерфейс | телефон: отменённая проверка рисует свой прогресс поверх новой | средняя | да |
+| G-20 | интерфейс | телефон: полоса едет назад (80 → 56 %), галочка шага гаснет | средняя | да |
+| G-21 | интерфейс | телефон: смена языка во время проверки — подпись врёт / на старом языке | средняя | да |
+| G-22 | интерфейс | десктоп: клик по истории во время проверки — в поле опасный адрес, под ним «БЕЗОПАСНО» | средняя | да |
+| G-23 | кривой ввод | `https:\evil.top/` браузер открывает, а страница и сервер отказывают с неверной причиной | средняя | да |
+| G-24 | интерфейс | десктоп: смена языка во время проверки — подписи и кнопка на старом языке | низкая | да |
+| G-25 | поток | при таймауте отменённые уровни докладываются как завершённые | низкая | по коду + агент |
+| G-26 | поток | если читатель ушёл, внутренняя ошибка проверки не попадает в лог | низкая | агент, по коду |
+| G-27 | ревью кода | отмена лидера `single_flight` раздаётся всем ждущим как CancelledError | низкая, скрытая | агент |
+| G-28 | сервер | `/batch` из 20 адресов списывает из лимита 1 запрос | низкая | по коду |
+| G-29 | сервер | кеш не нормализует адрес: `github.com` / `https://github.com/` / `HTTPS://GITHUB.COM/` — три проверки | низкая | да |
+| G-30 | сервер | у части ошибок нет поля `code` | низкая | агент |
+| G-31 | интерфейс | события SSE с `\r\n\r\n` не разбираются | низкая | по коду |
+| G-32 | интерфейс | поворот телефона во время проверки — прогресс и результат пропадают | низкая | да |
+| G-33 | интерфейс | без Tailwind полоска прогресса на десктопе высотой 0 px | низкая | да |
 
-Серьёзность: **высокая** — врёт пользователю; **средняя** — портит объяснение или балл; **низкая** — косметика.
+Серьёзность: **высокая** — врёт пользователю или падает; **средняя** — портит объяснение или ухудшает балл; **низкая** — косметика.
 
-## Общий харнесс
+## Самое срочное, если времени мало
+
+1. **G-02 + G-03 + G-04** — одна большая беда: честные сайты красные. Подъём бренда до 55 оставил ему зазор в +5 до порога, а уровень страницы добавляет бренд из текста ещё раз. `vtb-leasing.ru`, `aboutamazon.com`, `githubstatus.com`, `yandex-team.ru` — «ОПАСНО» на бою прямо сейчас. Ложная тревога для проекта хуже пропуска.
+2. **G-01** — любой сайт, который молчит на закрытии TLS, не получает вердикта вовсе, а 20 таких проверок забивают сервер на 30 секунд для всех.
+3. **G-05, G-06, G-07** — экран ожидания: вечная блокировка кнопки и ложное «Сервер недоступен» в двух сценариях, где сервер на самом деле ответил.
+4. **G-09** — та самая схема из истории проекта в повелительном наклонении («проголосуй») не ловится ни кириллицей, ни транслитом.
+
+---
+
+## G-01. TLS висит 30 секунд на закрытии соединения → 504 без вердикта
+
+- **Зона:** бой
+- **Серьёзность:** высокая
+- **Проверил сам запуском:** да — на бою и локальным TLS-сервером, который молчит после рукопожатия.
+- **Что не так:** `await writer.wait_closed()` стоит без таймаута; `TLS_TIMEOUT=6` ограничивает только рукопожатие, а закрытие TLS в asyncio ждёт до 30 с — ровно `SCAN_TOTAL_TIMEOUT`.
+- **Как воспроизвести:**
 
 ```bash
-mkdir -p /tmp/pg && cat > /tmp/pg/verify.py <<'EOF'
-import sys; sys.path.insert(0, '/home/user/phishguard/backend')
-from pipeline.lexical_analyzer import lexical_analyzer as L
-from pipeline.scorer import calculate_risk_score as S
-from models import *
-OFF = dict(checked=False, error='offline')
-def sc(u, **kw):
-    return S(url=u, original_url=u,
-             gsb=kw.get('gsb', ThreatIntelResult(**OFF)), reputation=kw.get('rep', ReputationResult(**OFF)),
-             domain_age=kw.get('age', DomainAgeResult(**OFF)), lexical=L.analyze(u), redirects=kw.get('ri'),
-             ai=AiVerdictResult(**OFF), tls=kw.get('tls', TlsResult(**OFF)),
-             ct=kw.get('ct', CtResult(**OFF)), page=kw.get('page', PageResult(**OFF)))
-def show(u, **kw):
-    r = sc(u, **kw)
-    print(f'{r.risk_score:3d} {r.verdict.value:10s} {u}')
-    print('     ', [(s.code, s.weight) for s in r.signals if s.weight])
-    return r
+curl -s -m 60 -o /dev/null -w '%{time_total} %{http_code}\n' -X POST \
+  https://phishguard-ayrt.onrender.com/scan -H 'content-type: application/json' \
+  -d '{"url":"https://login.microsoftonline.com/"}'
+# 30.455544 504
+```
+
+Локально: поднять `ssl`-сервер в потоке, который делает `ctx.wrap_socket(c, server_side=True)` и дальше не читает и не закрывает сокет; `check_tls("https://localhost:PORT/")` с `BLOCK_PRIVATE_ADDRESSES=False` возвращается через **30.0 с** (`checked=True`).
+
+- **Ожидали:** не дольше `TLS_TIMEOUT` (6 с), дальше вердикт по остальным уровням.
+- **Получили:** 504 «Проверка заняла слишком много времени». В потоке все уровни закрылись к 1.7 с, `tls` — на 30.5 с, следом `error 504`. В браузере человек ждёт ~63 с (см. G-07: вторая проверка) и получает локальный разбор с «Сервер недоступен · достоверность 25 %». У `outlook.office.com` то же самое.
+- **Где в коде:** `backend/pipeline/tls_check.py:166-171` (`finally: writer.close(); await writer.wait_closed()`).
+- **Заметка:** мошеннику достаточно не отвечать на `close_notify`, и его сайт не получает вердикта. Побочно (агент, локально): 20 таких проверок занимают весь `_scan_semaphore(20)` (`main.py:70`), честная проверка `github.com` следом ждала 29.9 с.
+
+---
+
+## G-02. Бренд в домене (55) + любая мелочь = «ОПАСНО» честным сайтам
+
+- **Зона:** веса 20 сентября
+- **Серьёзность:** высокая
+- **Проверил сам запуском:** да — на бою и офлайн-стендом.
+- **Что не так:** при весе 55 бренду до порога 60 не хватает +5. Добивает что угодно: молчание реестра (+5), цифра (+10), «дешёвая» зона (+10), скрытые поля (+10), слово «bank» (+12). При 45 нужно было +15.
+- **Как воспроизвести:**
+
+```bash
+# бой
+python3 - <<'EOF'
+import httpx
+d = httpx.post("https://phishguard-ayrt.onrender.com/scan", json={"url": "https://www.githubstatus.com/"}, timeout=60).json()
+print(d["risk_score"], d["verdict"], [(s["code"], s["weight"]) for s in d["signals"] if s["weight"]])
 EOF
+# 65 PHISHING [('BRAND_IMPERSONATION', 55), ('PAGE_HIDDEN_INPUTS', 10)]
+
+# офлайн
+cd backend && python3 /tmp/offline.py https://microsoft365.com/ https://yandex.cloud/ https://vtb-bank.kz/ \
+  https://www.googlewatchblog.de/ https://sberbank-insurance.ru/
 ```
 
-Для браузера: Chromium `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, Playwright в `/opt/node22/lib/node_modules` (запускать с `NODE_PATH=/opt/node22/lib/node_modules`). Tailwind с CDN в контейнере сам не грузится, копия качается так: `curl -s -o /tmp/tw.js https://cdn.tailwindcss.com/3.4.16` (~451 КБ), подставляется через `page.route`, файл проекта не меняется.
+- **Получили (офлайн):**
+  - `microsoft365.com` — 65 PHISHING (55 + `DIGITS_IN_DOMAIN` 10) даже при зрелом домене;
+  - `yandex.cloud` — 65 PHISHING (55 + `ABUSED_TLD` 10);
+  - `vtb-bank.kz` (настоящий ВТБ Казахстан) — 67 PHISHING (55 + `TRIGGER_KEYWORDS` 12);
+  - `googlewatchblog.de`, `sberbank-insurance.ru` — 55 при зрелом домене, **60 PHISHING, если реестр промолчал**.
+- **Ожидали:** «ПОДОЗРИТЕЛЬНО», как при 45/50.
+- **Где в коде:** `backend/config.py:72-73` (`brand_impersonation`, `brand_typosquat` = 55).
+- **Заметка:** последний пункт бьёт в принцип «не смогли проверить ≠ …» с обратной стороны: молчание реестра само по себе переводит жёлтое в красное. На бою `DOMAIN_AGE_UNKNOWN` стабильно у зоны `.de` — значит, любой немецкий сайт с брендом в имени красный. По данным агента 103 адреса из 240 стали красными в каком-то сценарии только из-за 55. Таблица агента не сохранится; адреса выше — минимальный набор.
 
 ---
 
-## Находка F-01. Сервер выносит разные вердикты одному домену в зависимости от написания
+## G-03. Бренд считается дважды: лексикой в домене и страницей в тексте
 
-- **Зона:** два движка
-- **Серьёзность:** критическая
-- **Проверил сам запуском:** да
-- **Что не так:** `decode_punycode` разворачивает имя через `idna.decode`, а тот отказывается декодировать метку, не проходящую правила IDNA2008 — например, с неразрывным дефисом U+2011 вместо обычного. Браузер такое разворачивает молча. У нас «человеческий вид» домена остаётся ACE-мусором: бренда в нём нет, зато есть цифры, которых в настоящем имени не было.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
-from models import DomainAgeResult, ScanRequest
-M = DomainAgeResult(checked=True, age_days=4000, source='rdap')
-for label, u in [('обычный дефис', 'https://xn----7sbbbax6afkrcdiwm.xn--p1ai/vhod'),
-                 ('U+2011       ', 'https://xn--80aabat1afiqbdhvl6097h.xn--p1ai/vhod')]:
-    r = sc(ScanRequest(url=u).url, age=M)
-    print(f'{label} -> {r.risk_score:3d} {r.verdict.value:12s} {[(s.code,s.weight) for s in r.signals if s.weight]}')
-
-from normalize import decode_punycode
-for h in ['xn----7sbbbax6afkrcdiwm.xn--p1ai','xn--80aabat1afiqbdhvl6097h.xn--p1ai','xn--micrsoft-zwg.com']:
-    print(f'{h:36s} -> {decode_punycode(h)}')
-"
-```
-
-- **Ожидали:** одно и то же имя в двух написаниях — один и тот же балл.
-- **Получили:**
-
-```
-обычный дефис ->  45 SUSPICIOUS   [('BRAND_IMPERSONATION', 45)]
-U+2011        ->  10 SAFE         [('DIGITS_IN_DOMAIN', 10)]
-
-xn----7sbbbax6afkrcdiwm.xn--p1ai     -> сбербанк-онлайн.рф
-xn--80aabat1afiqbdhvl6097h.xn--p1ai  -> xn--80aabat1afiqbdhvl6097h.рф    <- провал декодера
-xn--micrsoft-zwg.com                 -> xn--micrsoft-zwg.com             <- провал декодера
-```
-
-Сервер противоречит сам себе: `https://сбербанк‑онлайн.рф/vhod` юникодом → **45 SUSPICIOUS**, тот же домен в виде `https://xn--80aabat1afiqbdhvl6097h.xn--p1ai/vhod` → **10 SAFE**. Страница (`engineLocal`) на punycode-форме даёт 45 — то есть расходятся ещё и движки.
-
-- **Где в коде:** `backend/normalize.py:43-65` (`decode_punycode`), потребители — `backend/pipeline/lexical_analyzer.py:343` и `:346`. В зоне `.рф` эффект полный: вторая метка (`xn--p1ai` → `рф`) декодируется нормально, поэтому `_idn_is_native` (`lexical_analyzer.py:416`) считает домен «родным IDN» и глушит ещё и `PUNYCODE`. Остаётся 10 баллов за выдуманные цифры.
-- **Заметка:** это возврат того самого бага, который чинили 18 сентября для `.рф` (комментарий `lexical_analyzer.py:337-342` про «вход-сбербанк.рф») — только теперь он срабатывает не на зоне, а на одном подменённом символе. Побочно сервер пишет пользователю неправду: «Домен закодирован как xn--… и **отображается как** `xn--80aabat1afiqbdhvl6097h.com`», хотя браузер показывает `сбербанк‑онлайн.com`.
-  Агент прогнал 166 адресов: 125 совпали полностью, 34 разошлись, **15 из 74 нелатинских — самопротиворечие сервера на двух написаниях**.
-  Смягчающее: при недоступных внешних источниках достоверность падает до 17 %, и `applyConfidence` (`index.html:1616`) подменяет зелёное «БЕЗОПАСНО» на «НЕ ПРОВЕРЕНО» — защита от зелёной галочки пока держит. Но улика потеряна, а на `.com`-варианте достоверность уже 0.33.
-
----
-
-## Находка F-02. Любой японский домен помечается как «ОПАСНО»
-
-- **Зона:** два движка
+- **Зона:** веса / конфликт уровней
 - **Серьёзность:** высокая
-- **Проверил сам запуском:** да
-- **Что не так:** `mixed_scripts` берёт первое слово из Unicode-имени символа как название письменности. У 例 это `CJK UNIFIED IDEOGRAPH-4F8B` → «CJK», у え — `HIRAGANA LETTER E` → «HIRAGANA». Два «алфавита» в одной метке → `MIXED_SCRIPTS` 45. По-японски так пишется почти всё.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
-from normalize import mixed_scripts
-from models import DomainAgeResult, ScanRequest
-for s in ['例え','お名前','日本語','みんな','テスト','аpple','сбербанк']:
-    print(f'{s:10s} mixed_scripts={mixed_scripts(s)}')
-M = DomainAgeResult(checked=True, age_days=4000, source='rdap')
-for u in ['https://お名前.com','https://日本語ドメイン.jp','https://例え.テスト']:
-    r = sc(ScanRequest(url=u).url, age=M)
-    print(f'{r.risk_score:3d} {r.verdict.value:12s} {[(s.code,s.weight) for s in r.signals if s.weight]}  {u}')
-"
-```
-
-- **Ожидали:** SAFE. `お名前.com` — крупнейший регистратор доменов Японии, `例え.テスト` — официальный тестовый домен IANA.
-- **Получили:**
-
-```
-例え         mixed_scripts=True
-お名前        mixed_scripts=True
-日本語        mixed_scripts=False
-みんな        mixed_scripts=False
-テスト        mixed_scripts=False
-
- 75 PHISHING     [('MIXED_SCRIPTS', 45), ('PUNYCODE', 30)]  https://お名前.com
- 75 PHISHING     [('MIXED_SCRIPTS', 45), ('PUNYCODE', 30)]  https://日本語ドメイン.jp
- 75 PHISHING     [('MIXED_SCRIPTS', 45), ('PUNYCODE', 30)]  https://例え.テスト
-```
-
-Движок страницы на тех же адресах даёт 0 SAFE — расхождение вдобавок.
-
-- **Где в коде:** `backend/normalize.py:290-312` (`mixed_scripts`). Попутно ломается `_idn_is_native`, и домен добирает `PUNYCODE` 30 — это же F-13.
-- **Заметка:** кандзи, хирагана и катакана — три письменности одного языка, и соседство их в одном слове нормально. Проверять надо не «разные письменности», а «письменности, которых не бывает вместе в живом языке» — латиница с кириллицей, латиница с греческим.
+- **Проверил сам запуском:** да, на бою.
+- **Что не так:** уровень страницы видит в тексте то же имя, что уже нашла лексика в домене, и добавляет `PAGE_BRAND_MISMATCH` 35. Один факт — два весомых признака.
+- **Как воспроизвести:** тем же скриптом, что в G-02, адреса `https://vtb-leasing.ru/`, `https://aboutamazon.com/`, `https://yandex-team.ru/`.
+- **Получили (бой):** `vtb-leasing.ru` 90 PHISHING (55 + 35), `aboutamazon.com` 90 PHISHING (55 + 35). По данным агента так же `vtb-arena.com` 100, `gazprom-international.com`, `raiffeisen-capital.ru`, `bps-sberbank.by` — 90.
+- **Ожидали:** бренд, уже засчитанный в домене, страница второй раз не считает.
+- **Где в коде:** `backend/pipeline/scorer.py:383-394` (`foreign_brands`) и `:460-466`.
+- **Заметка:** не регрессия весов (при 45 было бы 80), но `tests/test_no_conflicts.py` случай не ловит — там эталон без бренда в имени. Агент видел ещё и случайную атрибуцию: `paypay.ne.jp` получил `brands_in_text=['apple']` (видимо, кнопки App Store).
 
 ---
 
-## Находка F-03. `госуслуги.рф` помечен как подделка под самого себя
+## G-04. Новостные сайты и форумы «выдают себя за бренд» по упоминаниям в тексте
 
-- **Зона:** регрессии
+- **Зона:** ложные тревоги (уровень страницы)
 - **Серьёзность:** высокая
-- **Проверил сам запуском:** да
-- **Что не так:** оговорка «свой бренд в своей приличной зоне — не подделка» сверяет канонический ключ словаря и пуникодный `sld`, а новые синонимы (добавлены 19 сентября) ищутся по декодированному человеческому имени. Кириллица и новые зоны проходят мимо оговорки.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import show
-from models import DomainAgeResult, CtResult
-M = DomainAgeResult(checked=True, age_days=4000, source='rdap')
-C = CtResult(checked=True, first_seen_days=3500, total_certs=500)
-for u in ['https://госуслуги.рф','https://газпром.рф','https://сбербанк.рф','https://яндекс.рф',
-          'https://vk.company','https://vk.team','https://сбер.рф','https://alfa.travel']:
-    show(u, age=M, ct=C)
-"
-```
-
-- **Ожидали:** SAFE. `госуслуги.рф` — настоящий портал госуслуг.
-- **Получили:** все восемь → `45 SUSPICIOUS` с `BRAND_IMPERSONATION` 45 и текстом «имя бренда использовано в домене, который бренду не принадлежит».
-- **Где в коде:** `backend/pipeline/lexical_analyzer.py:659` (оговорка `if sld == brand and not zone_is_cheap: continue`), синонимы — `:688` и `:692-700`. Коммит `2b68d3b`.
-- **Заметка:** объяснение врёт прямым текстом — домен как раз бренду и принадлежит.
+- **Проверил сам запуском:** да — на бою и локально с настоящей страницей.
+- **Что не так:** три упоминания бренда в тексте считаются «страница выдаёт себя за бренд». На новостном сайте про технологии это любая главная.
+- **Как воспроизвести:** скрипт из G-02, адреса `https://3dnews.ru/`, `https://www.cnews.ru/`, `https://habr.com/ru/news/`.
+- **Получили (бой):**
+  - `3dnews.ru` — 45 SUSPICIOUS (`PAGE_BRAND_MISMATCH` 35 + `DIGITS_IN_DOMAIN` 10);
+  - `cnews.ru` — 35 SUSPICIOUS;
+  - `habr.com/ru/news/` — 35 SUSPICIOUS.
+  - Локально `pikabu.ru` с настоящей страницей (`analyze_page` + чистое окружение: домен 6000 дней, TLS в порядке, базы чистые) — **90 PHISHING**: бренды 35 + вход через VK 25 + пароль 20 + скрытые поля 10. На бою у pikabu 0 только потому, что с Render страница не дочитывается.
+- **Ожидали:** SAFE.
+- **Где в коде:** `backend/pipeline/page_analyzer.py:113` (`_BRAND_MENTION_THRESHOLD = 3`), `backend/pipeline/scorer.py:391-475`.
+- **Заметка:** на pikabu бренд в тексте ещё и включает `hard_evidence`, после которого «вход через VK» начинает весить 25 — цепная реакция от одной ложной улики.
 
 ---
 
-## Находка F-04. Честные фирмы попали под короткие синонимы брендов
+## G-05. Поток замолчал после заголовков → кнопка заблокирована навсегда
 
-- **Зона:** регрессии
+- **Зона:** интерфейс
 - **Серьёзность:** высокая
-- **Проверил сам запуском:** да
-- **Что не так:** словарь синонимов от 19 сентября содержит короткие формы (`alfa`, `vk`, `wb`, `tg`, `icloud`, `raif`, `esia`, `msft`), и они бьют по любой фирме с таким словом в имени.
+- **Проверил сам запуском:** да — свой сервер, который отдаёт `start` + один `stage` и молчит.
+- **Что не так:** `fetchWithTimeout` снимает таймер в `finally`, как только пришли заголовки. Дальше `reader.read()` читает поток без всякого ограничения.
 - **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
-from models import DomainAgeResult, CtResult
-M = DomainAgeResult(checked=True, age_days=4000, source='rdap')
-C = CtResult(checked=True, first_seen_days=3500, total_certs=500)
-for u in ['https://alfa-remont.ru','https://alfa-stroy.ru','https://vk-service.ru','https://wb-group.ru',
-          'https://tg-stroy.ru','https://icloud-repair.ru','https://альфа-ремонт.рф']:
-    r = sc(u, age=M, ct=C)
-    print(f'{r.risk_score:3d} {r.verdict.value:12s} {[(s.code,s.weight) for s in r.signals if s.weight]}  {u}')
-"
-```
-
-- **Ожидали:** SAFE. Это ремонтная контора «Альфа», строительная фирма и мастерская по ремонту техники.
-- **Получили:** все семь → `45 SUSPICIOUS` с `BRAND_IMPERSONATION` 45.
-- **Где в коде:** `backend/data/brands.py` (`BRAND_ALIASES`), сопоставление — `backend/pipeline/lexical_analyzer.py:688`, `:692-700`. Коммит `2b68d3b`.
-- **Заметка:** в заметках по проекту записано, что короткие синонимы срабатывают только как отдельное слово, чтобы «озонотерапия» не стала фишингом. Оговорка работает — `ozonoterapia.ru` чист. Но дефис считается границей слова, и `alfa-remont` разбирается как отдельное `alfa`. Правка нужна не в границах слова, а в том, что делать со вторым куском: `alfa-remont` — это не «Альфа-банк с довеском», а другое слово.
+  1. Starlette-сервер: `POST /scan/stream` отдаёт `data: {"event":"start",...}\n\n`, `data: {"event":"stage",...}\n\n`, затем `await asyncio.sleep(3600)`; `OPTIONS` с `access-control-allow-*`.
+  2. Копия `index.html` в скретчпаде с `BACKEND_URL` → этот сервер (sed по `https://phishguard-ayrt.onrender.com`; CSP по `file://` в Chromium не мешает — проверено).
+  3. Playwright 1280: ввести `https://example.com/`, нажать «Проверить», ждать 80 с.
+- **Ожидали:** через 70 с (`BACKEND_TIMEOUT_MS`) — `/scan` или локальный разбор, кнопка снова работает.
+- **Получили:** `5s disabled=true text=...`, `40s disabled=true`, `80s disabled=true`. Агент держал 100 с — то же; на 390 то же, но там есть «Отменить». На десктопе спасает только перезагрузка.
+- **Где в коде:** `index.html:1830-1841` (`fetchWithTimeout`), цикл чтения `index.html:1902-1931`.
+- **Заметка:** в жизни — молча пропавшая связь (смена Wi-Fi на мобильную сеть, уснувший ноутбук). Сам сервер закрывает поток за 30 с, но это не помогает, если байты до страницы не доходят. Поведение прокси Render на подвисшем соединении не проверяли.
 
 ---
 
-## Находка F-05. Схема из истории проекта перестала ловиться кириллицей
+## G-06. Ответ 429 уходит без CORS-заголовков → «Сервер недоступен» вместо «Слишком много запросов»
 
-- **Зона:** регрессии
+- **Зона:** сервер / интерфейс
 - **Серьёзность:** высокая
-- **Проверил сам запуском:** да
-- **Что не так:** 19 сентября из схемы `fake_vote` убрали пересечение групп слов — правильно, оно давало ложные тревоги на `культура.рф/конкурс`. Но в группе Б остались только латинские написания (`detsk`, `detsad`, `shkola`, `risunok`, `talant`, `grant`), кириллических двойников не добавили.
+- **Проверил сам запуском:** да.
+- **Что не так:** `CORSMiddleware` добавлен раньше `rate_limit_middleware`. В Starlette последний добавленный слой — самый внешний, поэтому 429 от лимитера CORS-заголовков не получает. Браузер с другого адреса (а страница открыта с `file://` или с GitHub Pages) прочитать такой ответ не может и видит сетевую ошибку.
 - **Как воспроизвести:**
 
 ```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
-from pipeline.lexical_analyzer import lexical_analyzer as L
-for u in ['https://детский-конкурс.рф/голосование','https://golosovanie-za-rebenka.ru',
-          'https://vote-for-kids.ru/konkurs','https://konkurs-detskiy.ru/golos']:
-    f = L.analyze(u); r = sc(u)
-    print(f'{r.risk_score:3d} {r.verdict.value:12s} scam={f.scam_pattern} {u}')
-"
+cd backend && python3 - <<'EOF' 2>/dev/null | grep -v HTTP
+import sys, logging; sys.path.insert(0, '.'); logging.disable(logging.CRITICAL)
+from fastapi.testclient import TestClient
+import main
+c = TestClient(main.app)
+for i in range(32):
+    r = c.post("/scan", json={"url": "bad"}, headers={"Origin": "null"})
+    if i in (0, 31): print(i, r.status_code, "ACAO:", r.headers.get("access-control-allow-origin"))
+EOF
+# 0 422 ACAO: *
+# 31 429 ACAO: None
 ```
 
-- **Ожидали:** `SCAM_PATTERN` — это дословно та ссылка, из-за которой проект появился, в самом естественном русском написании.
-- **Получили:**
-
-```
- 27 SAFE         scam=None      https://детский-конкурс.рф/голосование
- 52 SUSPICIOUS   scam=fake_vote https://golosovanie-za-rebenka.ru
- 62 PHISHING     scam=fake_vote https://vote-for-kids.ru/konkurs
- 62 PHISHING     scam=fake_vote https://konkurs-detskiy.ru/golos
-```
-
-Транслит ловится, кириллица нет.
-
-- **Где в коде:** `backend/pipeline/lexical_analyzer.py:174-185`, группа Б схемы `fake_vote`. Коммит `fb1c273`.
+- **Ожидали:** 429 с `Access-Control-Allow-Origin` → страница показывает «Слишком много запросов. Повторите через N с.».
+- **Получили:** в браузере (агент, Playwright) — «blocked by CORS policy» на `/scan/stream`, затем на `/scan`, затем локальный движок с тегом «Сервер недоступен».
+- **Где в коде:** `backend/main.py:122-132` (порядок `add_middleware` и `app.middleware("http")(rate_limit_middleware)`), ответ — `backend/rate_limit.py:100-114`.
+- **Заметка:** ветки `RATE_LIMIT` в `index.html` (1887, 1960, 2348, 2794) при кросс-доменном запросе не срабатывают никогда. `tests/test_api.py` проверяет код 429, но не заголовки. Касается `/scan`, `/scan/stream` и `/batch`.
 
 ---
 
-## Находка F-06. Тревожные слова в поддомене и в пути весят ноль
+## G-07. Ошибка внутри потока (504/500) → вторая полная проверка и ложное «Сервер недоступен»
 
-- **Зона:** регрессии
-- **Серьёзность:** высокая
-- **Проверил сам запуском:** да
-- **Что не так:** 19 сентября слова входа стали весить по месту: в имени домена — улика, в пути — нет. Разумно, но поддомены попали в «путь». Жертва читает `update-billing.suspended-account.mydomain.ru` как имя сайта, а мы считаем это хвостом и ставим вес 0.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
-from pipeline.lexical_analyzer import lexical_analyzer as L
-for u in ['https://update-billing.suspended-account.mydomain.ru/',
-          'https://login.verify.confirm-account.example-cdn.com/signin',
-          'https://mydomain.ru/secure/login/verify/account/update/confirm/password',
-          'https://mydomain-secure-login.ru/']:
-    f = L.analyze(u); r = sc(u)
-    print(f'{r.risk_score:3d} {r.verdict.value:12s} слова={f.trigger_keywords}')
-    print(f'     {[(s.code,s.weight) for s in r.signals if s.weight]}  {u}')
-"
-```
-
-- **Ожидали:** слова в поддомене весят как слова в имени домена — их видно в адресной строке.
-- **Получили:**
-
-```
-  5 SAFE   слова=['account','billing','suspended','update']            -> вес 0
-  5 SAFE   слова=['account','confirm','login','signin','verify']       -> вес 0
-  5 SAFE   слова=['account','confirm','login','password','secure',...] -> вес 0   (7 слов в пути)
- 27 SAFE   слова=['login','secure']                                    -> вес 22  (в имени домена)
-```
-
-- **Где в коде:** `backend/pipeline/lexical_analyzer.py:578-583` (`_keywords_in_host` смотрит только на регистрируемое имя). Коммит `2f020f7`.
-- **Заметка:** поддомен и путь — это разные вещи для жертвы. `update-billing.suspended-account.mydomain.ru` в адресной строке телефона выглядит как сайт «update-billing», потому что хвост не влезает. Путь — другое дело, там правка 19 сентября верна.
-
----
-
-## Находка F-07. «Поле пароля + вход через Telegram» вместе весят ноль
-
-- **Зона:** пороги
-- **Серьёзность:** высокая
-- **Проверил сам запуском:** да
-- **Что не так:** веса признаков страницы включаются только при `hard_evidence` — чужой бренд в тексте, форма на чужой домен, площадка с пользовательским контентом или домен моложе 7 дней. На самостоятельно зарегистрированном домене старше недели связка «просит пароль» + «войти через Telegram» весит ноль. Это дословно сценарий из истории проекта.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
-from models import DomainAgeResult, CtResult, PageResult
-A = DomainAgeResult(checked=True, age_days=40, source='rdap')
-C = CtResult(checked=True, first_seen_days=40, total_certs=2)
-u = 'https://my-prize-club.ru/p/9'
-cases = [('ничего',                 PageResult(checked=True,status_code=200)),
-         ('только вход через ТГ',   PageResult(checked=True,status_code=200,messenger_login=['telegram'])),
-         ('только поле пароля',     PageResult(checked=True,status_code=200,has_password_field=True)),
-         ('ПАРОЛЬ + ВХОД ЧЕРЕЗ ТГ', PageResult(checked=True,status_code=200,has_password_field=True,
-                                               messenger_login=['telegram'],form_count=1))]
-for name, p in cases:
-    r = sc(u, page=p, age=A, ct=C)
-    print(f'{name:24s} -> {r.risk_score:3d} {r.verdict.value:10s} {[(s.code,s.weight) for s in r.signals if s.code.startswith(\"PAGE\")]}')
-print('--- обрыв на возрасте домена, та же страница ---')
-P = PageResult(checked=True,status_code=200,has_password_field=True,messenger_login=['telegram'],form_count=1)
-for d in [6,7,8]:
-    r = sc(u, age=DomainAgeResult(checked=True, age_days=d, source='rdap'), ct=C, page=P)
-    print(f'{d} дн -> {r.risk_score:3d} {r.verdict.value}')
-"
-```
-
-- **Ожидали:** связка весит больше, чем каждый признак по отдельности.
-- **Получили:**
-
-```
-ничего                   ->  27 SAFE  [('PAGE_CLEAN', 0)]
-только вход через ТГ     ->  27 SAFE  [('PAGE_MESSENGER_LOGIN_OK', 0)]
-только поле пароля       ->  27 SAFE  [('PAGE_PASSWORD_FORM_OK', 0)]
-ПАРОЛЬ + ВХОД ЧЕРЕЗ ТГ   ->  27 SAFE  [('PAGE_MESSENGER_LOGIN_OK', 0), ('PAGE_PASSWORD_FORM_OK', 0)]
-
-6 дн -> 100 PHISHING
-7 дн ->  47 SUSPICIOUS
-8 дн ->  47 SUSPICIOUS
-```
-
-Один день разницы в возрасте домена — 53 балла разницы в результате.
-
-- **Где в коде:** `backend/pipeline/scorer.py:390-441` (`hard_evidence` и обе ветки `*_OK`).
-- **Почему это не ловится тестами:** `tests/test_no_conflicts.py:101-109` проверяет каждый признак **по отдельности** и ждёт пустой набор — это намеренная защита от ложных тревог, и она верна. `tests/test_new_levels.py:208` («вход через мессенджер сам по себе ничего не стоит») — тоже про одиночный признак. Связку «пароль + мессенджер» саму по себе, без чужого бренда рядом, не проверяет ни один тест.
-- **Заметка:** мошеннические домены часто выдерживают: покупают б/у или регистрируют за месяц до рассылки. Возраст 40 дней для фишинга совершенно обычен. Стоит либо дать связке вес самой по себе, либо растянуть обрыв (сейчас он на 7 днях и отвесный).
-
----
-
-## Находка F-08. `bit.ly` даёт разные вердикты на странице и на сервере
-
-- **Зона:** регрессии
-- **Серьёзность:** высокая
-- **Проверил сам запуском:** да
-- **Что не так:** 19 сентября для нераскрытых сокращателей добавили пол 35 баллов — правильная правка, «не смогли проверить ≠ безопасно». Во фронтенд её не перенесли: там есть только `TRUSTED_SCORE_CAP`.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
-from models import RedirectInfo
-ri = RedirectInfo(resolved=False, final_url='https://bit.ly/xyz', chain=['https://bit.ly/xyz'],
-                  hops=0, was_shortener=True, error='нет ответа')
-r = sc('https://bit.ly/xyz', ri=ri)
-print('сервер:', r.risk_score, r.verdict.value, [(s.code,s.weight) for s in r.signals if s.weight])
-"
-
-cd /home/user/phishguard && NODE_PATH=/opt/node22/lib/node_modules node -e "
-const {chromium}=require('playwright');
-(async()=>{
- const b=await chromium.launch({executablePath:'/opt/pw-browsers/chromium-1194/chrome-linux/chrome'});
- const p=await b.newPage(); await p.route('**cdn.tailwindcss.com**', r=>r.abort());
- await p.goto('file:///home/user/phishguard/index.html');
- console.log('страница:', await p.evaluate(()=>{const e=engineLocal('https://bit.ly/xyz');
-   return e.score+' '+e.verdict+' '+JSON.stringify(e.signals.filter(s=>s.weight).map(s=>s.code+':'+s.weight));}));
- await b.close();})()"
-
-grep -n "SHORTENER_FLOOR\|TRUSTED_SCORE_CAP" backend/pipeline/scorer.py index.html
-```
-
-- **Ожидали:** одинаковый вердикт.
-- **Получили:**
-
-```
-сервер:   35 SUSPICIOUS [('SHORTENER_UNRESOLVED', 10), ('DOMAIN_AGE_UNKNOWN', 5)]
-страница: 10 БЕЗОПАСНО  ["SHORTENER:10"]
-
-backend/pipeline/scorer.py:42:UNRESOLVED_SHORTENER_FLOOR = 35
-backend/pipeline/scorer.py:43:UNRESOLVED_SHORTENER_CAP = 45
-index.html:585:const TRUSTED_SCORE_CAP = 15;
-```
-
-- **Где в коде:** `backend/pipeline/scorer.py:42` и `:666`; во фронтенде константы нет вовсе.
-- **Заметка, отдельная:** у сервера видимые признаки дают 15 баллов, а показывается 35. Двадцать баллов взялись из пола, и нигде это не объяснено — для сервиса, у которого объяснимость заявлена главной функцией, это само по себе дефект.
-  **Почему проскочило мимо 385 тестов:** `tests/test_frontend_sync.py:73-77` сверяет с фронтендом только `TRUSTED_SCORE_CAP`. Чиня это, имеет смысл расширить тест на все константы скоринга, а не только на таблицу весов.
-
----
-
-## Находка F-09. Без Tailwind настольная страница нечитаема
-
-- **Зона:** вёрстка
-- **Серьёзность:** высокая
-- **Проверил сам запуском:** да, замеры совпали с агентскими до пикселя
-- **Что не так:** аварийный CSS (`index.html:87-218`) целиком лежит внутри `@media (max-width: 640px)` и привязан к селекторам мобильного слоя. Телефону он достаётся, компьютеру — нет вообще.
-- **Как воспроизвести:**
-
-```bash
-curl -s --max-time 45 -o /tmp/tw.js https://cdn.tailwindcss.com/3.4.16
-cd /home/user/phishguard && NODE_PATH=/opt/node22/lib/node_modules node -e "
-const {chromium}=require('playwright'); const fs=require('fs');
-(async()=>{
- const b=await chromium.launch({executablePath:'/opt/pw-browsers/chromium-1194/chrome-linux/chrome'});
- const tw=fs.readFileSync('/tmp/tw.js','utf8');
- for(const withTw of [true,false]){
-  const ctx=await b.newContext({viewport:{width:1280,height:900}}); const p=await ctx.newPage();
-  await p.route('**cdn.tailwindcss.com**', r=> withTw ? r.fulfill({contentType:'application/javascript',body:tw}) : r.abort());
-  await p.route('**onrender.com**', r=>r.abort());
-  await p.goto('file:///home/user/phishguard/index.html'); await p.waitForTimeout(900);
-  console.log(withTw?'С TAILWIND':'БЕЗ TAILWIND', await p.evaluate(()=>{
-    const d=s=>{const e=document.querySelector(s); const r=e.getBoundingClientRect();
-      return getComputedStyle(e).display+' '+Math.round(r.width)+'x'+Math.round(r.height);};
-    return {текст:getComputedStyle(document.body).color, меню:d('div.hidden.md\\\\:flex'),
-            бургер:d('#menuBtn'), loadingBar:d('#loadingBar'), deskHistory:d('#deskHistory')};}));
-  await p.fill('#urlInput','http://paypal.com.account-verify.ru/secure/login');
-  await p.click('#scanBtn'); await p.waitForTimeout(2500);
-  console.log(await p.evaluate(()=>{const g=s=>{const e=document.querySelector(s); const r=e.getBoundingClientRect();
-    return Math.round(r.width)+'x'+Math.round(r.height)+' @y='+Math.round(r.y);};
-   return {кольцо:g('#verdictCard svg'), балл:g('#scoreNum'), вердикт:g('#verdictLabel'),
-     цвет:getComputedStyle(document.querySelector('#verdictLabel')).color};}));
-  await ctx.close();}
- await b.close();})()"
-```
-
-- **Ожидали:** без Tailwind страница деградирует, но остаётся пользуемой.
-- **Получили:**
-
-```
-С TAILWIND   текст: rgb(203,213,225) | меню: flex 259x25 | бургер: none 0x0 | loadingBar: none | deskHistory: none
-             кольцо 80x80 @y=7 | балл 29x32 @y=31 | вердикт 694x32 @y=5 цвет rgb(248,113,113)
-
-БЕЗ TAILWIND текст: rgb(0,0,0) | меню: block 1264x39 | бургер: inline-block 16x6 | loadingBar: block 1264x19 | deskHistory: block 1264x113
-             кольцо 1262x1262 @y=-19 | балл 19x19 @y=1247 | вердикт 1262x18 @y=1282 цвет rgb(0,0,0)
-```
-
-- **Что именно ломается, по порядку починки:**
-  1. **`body` теряет цвет текста** — фон `#05070a` задан своим CSS и остаётся, текст становится чёрным. Одна строка аварийного CSS чинит почти весь визуал.
-  2. **`<svg>` кольца балла** (`index.html:300`) имеет только `viewBox`, без `width`/`height` — растягивается на всю ширину родителя, 1262×1262. Слово «ОПАСНО» уезжает на 1282 пикселя вниз. Цвет вердикта тоже ставится классом Tailwind — `renderResult()`, `index.html:1913-1917`.
-  3. **Пять блоков с голым `.hidden` протекают**: `#loadingBar` (288), `#errorMsg` (294), `#redirectCard` (316), `#rawDetails` (323), `#deskHistory` (353).
-  4. **`#menuBtn`** (242) с `md:hidden` — единственный элемент, который *появляется* там, где не должен.
-  5. Раскладка: `nav` теряет flex (85 → 317px высотой), логотип 44×44 → 256×256, `main` теряет ограничение ширины, поле ввода схлопывается до 178×21 с белым фоном, кнопка становится серой системной, блоки 01/02/03 выстраиваются в столбик, `box-sizing` остаётся `content-box`.
-  6. То же нужно `api.html`, минус пункт 3 — у неё нет протекающих блоков.
-- **Что НЕ ломается (не трогать):** фон, `.glass`/`.glass-card`, `#resultPanel{display:none}` (47) — панель корректно скрыта до проверки, `#mobileApp{display:none}` (84) — мобильный слой на десктоп не протекает, переключатель языка, `#mobileMenu`, `.url-tag`. **Весь JavaScript цел**: вердикты считаются до цифры так же, ни одной ошибки в консоли, все кнопки достижимы кликом. Горизонтальной прокрутки нет ни на одной ширине — держит `overflow-x:hidden` (40). На 1280, 1440 и 1920 поломка одинаковая.
-
----
-
-## Находка F-10. Подделку под Microsoft видит страница, а сервер нет
-
-- **Зона:** два движка
-- **Серьёзность:** высокая
-- **Проверил сам запуском:** да
-- **Что не так:** следствие F-01. `xn--micrsoft-zwg.com` не разворачивается нашим декодером, поэтому сервер не видит в нём имени Microsoft. Страница декодирует по-браузерному и видит.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
-from models import DomainAgeResult, ScanRequest
-M = DomainAgeResult(checked=True, age_days=4000, source='rdap')
-r = sc(ScanRequest(url='https://xn--micrsoft-zwg.com/').url, age=M)
-print('сервер:', r.risk_score, r.verdict.value, [(s.code,s.weight) for s in r.signals if s.weight])
-"
-cd /home/user/phishguard && NODE_PATH=/opt/node22/lib/node_modules node -e "
-const {chromium}=require('playwright');
-(async()=>{const b=await chromium.launch({executablePath:'/opt/pw-browsers/chromium-1194/chrome-linux/chrome'});
- const p=await b.newPage(); await p.route('**cdn.tailwindcss.com**', r=>r.abort());
- await p.goto('file:///home/user/phishguard/index.html');
- console.log('страница:', await p.evaluate(()=>{const e=engineLocal('https://xn--micrsoft-zwg.com/');
-   return e.score+' '+e.verdict+' '+JSON.stringify(e.signals.filter(s=>s.weight).map(s=>s.code+':'+s.weight));}));
- await b.close();})()"
-```
-
-- **Ожидали:** оба движка видят подделку.
-- **Получили:**
-
-```
-сервер:   30 SUSPICIOUS [('PUNYCODE', 30)]
-страница: 100 ОПАСНО ["BRAND_TYPOSQUAT:50","MIXED_SCRIPTS:45","PUNYCODE:30"]
-```
-
-- **Заметка:** агент заявлял у сервера 45 — у меня вышло 30, в отчёте моя цифра. Заодно видно, что тройной счёт одного факта (F-13) живёт и на странице: `BRAND_TYPOSQUAT` + `MIXED_SCRIPTS` + `PUNYCODE` за одно и то же.
-
----
-
-## Находка F-11. Поле пароля снимает потолок доверия с честных страниц входа
-
-- **Зона:** регрессии
+- **Зона:** интерфейс
 - **Серьёзность:** средняя
-- **Проверил сам запуском:** да
-- **Что не так:** правка 19 сентября «площадка не ручается за чужое» снимает потолок доверия, когда уровень страницы что-то нашёл. Но поле пароля есть на **каждой** честной странице входа, и потолок падает там, где он был нужен. Наружу вылезает `REDIRECT_PARAMS` за `redirect_uri`, без которого OAuth не бывает.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
-from models import DomainAgeResult, CtResult, PageResult
-A = DomainAgeResult(checked=True, age_days=4000, source='rdap')
-C = CtResult(checked=True, first_seen_days=3500, total_certs=500)
-NOPAGE = PageResult(checked=True, status_code=200, form_count=0, bytes_read=9000)
-LOGIN  = PageResult(checked=True, status_code=200, has_password_field=True, form_count=1, bytes_read=9000)
-u = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb&response_type=code'
-a = sc(u, age=A, ct=C, page=NOPAGE); b = sc(u, age=A, ct=C, page=LOGIN)
-print(f'без поля пароля {a.risk_score:3d} {a.verdict.value:12s} | с полем пароля {b.risk_score:3d} {b.verdict.value:12s}')
-print('  признаки:', [(s.code,s.weight) for s in b.signals if s.weight])
-"
-```
-
-- **Ожидали:** SAFE. Это настоящая страница входа Microsoft.
-- **Получили:** `без поля пароля 15 SAFE | с полем пароля 35 SUSPICIOUS`, признаки `[('REDIRECT_PARAMS', 20), ('LONG_URL', 15)]`.
-- **Где в коде:** `backend/pipeline/scorer.py:645-651` и `:668-671` (`page_saw_something`), список параметров переадресации — `backend/pipeline/lexical_analyzer.py`, коммит `fbe2bc7` добавил туда `return_url`/`return_to`.
-- **Заметка:** агент заявлял, что так же ломаются `accounts.google.com`, `esia.gosuslugi.ru`, `passport.yandex.ru` и `github.com/login` — **у меня они дают 20 SAFE**, а не 30. Механизм тот же, но порога они пока не пробивают. В отчёте мои цифры.
+- **Проверил сам запуском:** по коду и прогонам двух агентов (один — на настоящем сервере с `SCAN_TOTAL_TIMEOUT=2`, в логе сервера два «Scan timed out»). Боевой сценарий подтверждён в G-01: 63 с в браузере.
+- **Что не так:** `event:error` превращается в `throw 'HTTP 504…'`; `scanWithProgress` пропускает мимо запасного пути только `REJECTED:` и `RATE_LIMIT:`, поэтому всё остальное уходит на `/scan` — сервер прогоняет всю проверку заново. Если и она 504 — `engineLocal` с тегом «Сервер недоступен».
+- **Как воспроизвести:** `cd backend && RATE_LIMIT_ENABLED=false SCAN_TOTAL_TIMEOUT=2 python3 -m uvicorn main:app --port 8712`, копия страницы на `http://127.0.0.1:8712`, проверить любой адрес, у которого страница грузится дольше 2 с.
+- **Ожидали:** ошибка, которую сервер сам прислал в потоке, — это ответ сервера, связь в порядке; показать текст сервера, не повторять.
+- **Получили:** `POST /scan/stream` → на 2.1 с `POST /scan` → 504. Полоска всё это время стоит на 87 % «Складываю улики...». Итог: «42 ПОДОЗРИТЕЛЬНО | Сервер недоступен · Локальный анализ · достоверность 25 %». На бою это 30 + 30 с и два списания из лимита.
+- **Где в коде:** `index.html:1921-1922` (error → throw), `index.html:1937-1951` (`scanWithProgress`), `index.html:2359-2363` (уход в `engineLocal`).
+- **Заметка:** комментарий на `index.html:1940-1942` прямо говорит «ответы, которые сервер ДАЛ, сюда не попадают» — для `event:error` это неправда. Родственный случай (агент, проверено мной прогоном): сервер принял соединение и молчит вовсе — 140 с «Ещё чуть-чуть, почти готово...», два подключения с интервалом 70 с.
 
 ---
 
-## Находка F-12. Официальный канал бренда на площадке помечен как подделка
+## G-08. Аварийный локальный вердикт кешируется в браузере на 15 минут
 
-- **Зона:** регрессии
+- **Зона:** интерфейс
 - **Серьёзность:** средняя
-- **Проверил сам запуском:** да
-- **Что не так:** правка «площадка не ручается за чужое» сделала `t.me` не-доверенным для содержимого, и упоминание бренда в тексте страницы стало `PAGE_BRAND_MISMATCH`. Официальный канал Сбербанка в Telegram — это как раз страница, где написано «Сбербанк» и домен `t.me`.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
-from models import DomainAgeResult, PageResult
-A = DomainAgeResult(checked=True, age_days=4000, source='rdap')
-P = PageResult(checked=True, status_code=200, brands_in_text=['sberbank'], form_count=0, bytes_read=9000)
-r = sc('https://t.me/sberbank', age=A, page=P)
-print(r.risk_score, r.verdict.value, [(s.code,s.weight) for s in r.signals if s.weight])
-print([s.detail for s in r.signals if s.code=='PAGE_BRAND_MISMATCH'])
-"
-```
-
-- **Ожидали:** SAFE или хотя бы без обвинения.
-- **Получили:** `35 SUSPICIOUS [('PAGE_BRAND_MISMATCH', 35)]` с текстом «страница выдаёт себя за sberbank, но домен t.me этой компании не принадлежит».
-- **Заметка:** правка сама по себе верная — фишинг на площадках она закрыла (проверено: 12 фишинговых адресов на `pages.dev`, `web.app`, `github.io`, `docs.google.com`, `telegra.ph` и других дают 90-100 PHISHING). Но у площадок есть и официальные представительства брендов, и их сервис теперь обвиняет.
+- **Проверил сам запуском:** да, нашёл сам при проверке G-07.
+- **Что не так:** после ухода в `engineLocal` результат идёт в `cacheSet` наравне с серверным. Следующая проверка того же адреса берёт его из `localStorage` и сервер не спрашивает, даже если тот уже проснулся.
+- **Как воспроизвести:** Playwright, страница по `file://`, `page.route('https://phishguard-ayrt.onrender.com/**')`: первый раз `abort('connectionrefused')`, второй раз отдавать нормальный ответ. Проверить `https://sber-bonus.top/login` дважды.
+- **Ожидали:** второй раз — запрос к серверу и серверный вердикт.
+- **Получили:** второй раз — «Сервер недоступен · Локальный анализ · достоверность 25 % · из кеша», **0 запросов к серверу**.
+- **Где в коде:** `index.html:2374` (`cacheSet(normalized, result)` без проверки `result.offline`), чтение — `index.html:2293`; то же в мобильной ветке — `index.html:2813`.
+- **Заметка:** особенно обидно после холодного старта Render: первая проверка часто уходит в локальный движок, и следующие 15 минут человек видит ослабленный разбор без страницы, возраста и баз.
 
 ---
 
-## Находка F-13. `MIXED_SCRIPTS` и `PUNYCODE` считают один факт дважды
+## G-09. Схема из истории проекта: «проголосуй» не распознаётся
 
-- **Зона:** пороги
+- **Зона:** пропуски
 - **Серьёзность:** средняя
-- **Проверил сам запуском:** да
-- **Что не так:** подавление `PUNYCODE` стоит только для случая `brand.kind == "homograph"`. Если письменности смешаны, но бренд не опознан, оба признака горят за один и тот же факт.
+- **Проверил сам запуском:** да, нашёл сам (агент упомянул SAFE мимоходом).
+- **Что не так:** схема `fake_vote` ловит «голосуй», «голосование», «golosovanie», но не приставочную форму «проголосуй» / «progolosuy» — именно так пишут приманку («проголосуй за ребёнка»).
 - **Как воспроизвести:**
 
 ```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import sc
+cd backend && python3 /tmp/offline.py https://проголосуй-за-ребенка.рф/ https://progolosuy-za-rebenka.ru/ \
+  https://проголосуй-за-малыша.рф/ https://голосуй-за-ребенка.рф/
+```
+
+- **Ожидали:** `SCAM_PATTERN` 35, как у `голосуй-за-ребенка.рф`.
+- **Получили:**
+  - `проголосуй-за-ребенка.рф` — 12 SAFE (только `TRIGGER_KEYWORDS`);
+  - `progolosuy-za-rebenka.ru` — **0 SAFE**;
+  - `проголосуй-за-малыша.рф` — 12 SAFE;
+  - для сравнения `голосуй-за-ребенка.рф` — 47 SUSPICIOUS с `SCAM_PATTERN`.
+- **Где в коде:** словарь схемы и граница слова в `backend/pipeline/lexical_analyzer.py` (похоже, левая граница не пускает приставку «про-»; точную строку не искал).
+- **Заметка:** `tests/test_lexical.py::test_founding_scam_is_caught_in_its_real_forms` проверяет четыре формы, повелительной с приставкой среди них нет.
+
+---
+
+## G-10. Поле пароля на честной странице входа бренда теперь +20
+
+- **Зона:** веса 20 сентября (правка №7)
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да, на бою.
+- **Что не так:** `brand_match` и `keywords_in_host` теперь считаются «приманкой в адресе», и признаки страницы начинают весить. В итоге собственная страница входа бренда получает и бренд, и пароль.
+- **Как воспроизвести:** скрипт из G-02, адрес `https://yandex-team.ru/`.
+- **Получили (бой):** 100 PHISHING — `BRAND_IMPERSONATION` 55, `PAGE_PASSWORD_FORM` 20, `REDIRECT_PARAMS` 20, `PAGE_HIDDEN_INPUTS` 10. По данным агента офлайн: `sberbank-ast.ru/Login.aspx` 75 (до 20.09 было 45), `login.gov`, `id.me`, `deutsche-bank.de` с паролем — 32 (было 12 SAFE).
+- **Ожидали:** пароль на странице входа — норма; без него `yandex-team.ru` всё равно 55 (см. G-12 — тоже ложно).
+- **Где в коде:** `backend/pipeline/scorer.py:429-442`.
+
+---
+
+## G-11. Опечаточный детектор ловит обычные слова
+
+- **Зона:** ложные тревоги
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да, на бою.
+- **Что не так:** расстояние 1–2 от бренда не значит опечатку: telegraph ≈ telegram, finance ≈ binance, stem ≈ steam.
+- **Как воспроизвести:** скрипт из G-02, адреса `https://www.telegraph.co.uk/`, `https://finance.ua/`.
+- **Получили (бой):** оба 55 SUSPICIOUS (`BRAND_TYPOSQUAT` 55). По агенту так же `telegraaf.nl`, `stem.org.uk`; при молчащем реестре — 60 PHISHING.
+- **Ожидали:** SAFE.
+- **Где в коде:** `backend/pipeline/lexical_analyzer.py:600-609`.
+- **Заметка:** агент заметил, что `canonical()` выкидывает дефис и `sber-bank.by` / `alfa-bank.kz` становятся опечаткой с расстоянием 0 (92–100). Чьи это домены — не подтвердили, на этом выводов не строим.
+
+---
+
+## G-12. Бренд ищется подстрокой внутри обычных слов и собственных доменов компаний
+
+- **Зона:** ложные тревоги
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да — бой и офлайн.
+- **Что не так:** бренд из 5+ букв находится внутри слова (`applebees`, `snapple`, `steamdb`), а у брендов неполный список собственных доменов.
+- **Как воспроизвести:** скрипт из G-02 для `https://www.applebees.com/`, `https://steamdb.info/`; офлайн `python3 /tmp/offline.py "https://googleadservices.com/pagead/aclk?adurl=https://x.com"`.
+- **Получили:** `applebees.com` 55, `steamdb.info` 55 (бой); `googleadservices.com/pagead/aclk?...` — 75 PHISHING (55 + `REDIRECT_PARAMS` 20), это обычная рекламная ссылка Google. По агенту так же `appleinsider.com`, `storage.yandexcloud.net`, `gazprom-media.com`, `googlevideo.com` (95), `githubassets`, `facebookmail`, `amazontrust`, `dropboxstatic`, `steamstatic`.
+- **Где в коде:** `backend/pipeline/lexical_analyzer.py:643-652`, `backend/data/brands.py:11-48` (`BRAND_DOMAINS`).
+
+---
+
+## G-13. `visa` в поддомене — «подделка под Visa»
+
+- **Зона:** ложные тревоги
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да, на бою.
+- **Что не так:** «visa» — обычное слово, и визовые центры VFS Global используют его в поддомене.
+- **Как воспроизвести:** скрипт из G-02, адрес `https://visa.vfsglobal.com/rus/ru/fra/login`.
+- **Получили:** 55 SUSPICIOUS (`BRAND_IMPERSONATION` 55).
+- **Ожидали:** SAFE (или «visa» в `AMBIGUOUS_ALIASES`).
+- **Где в коде:** `backend/pipeline/lexical_analyzer.py:612-617`.
+
+---
+
+## G-14. `AMBIGUOUS_ALIASES` пропускает очевидные приманки
+
+- **Зона:** пропуски
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да, офлайн.
+- **Что не так:** короткое написание бренда — улика только рядом с приманкой, но в списках приманок нет `auth`, `pay`, `premium`, `click`, `online`, `track`, `dostavka`, `find`, `авторизация`.
+- **Как воспроизвести:**
+
+```bash
+cd backend && python3 /tmp/offline.py https://vk-auth.ru/ https://alfa-click.ru/ https://tg-premium.ru/ \
+  https://wb-pay.ru/ https://icloud-find.com/ https://вк-авторизация.рф/ https://pochta-rossii.ru/
+```
+
+- **Получили:** все 0 SAFE (5 при молчащем реестре). До 20.09 агент мерил 45.
+- **Ожидали:** хотя бы «ПОДОЗРИТЕЛЬНО».
+- **Где в коде:** `_needs_a_lure` в `backend/pipeline/lexical_analyzer.py:217-229`, списки приманок там же.
+- **Заметка:** адреса синтетические, у настоящего фишинга домен молодой и балл добрал бы возраст. Но лексика тут не даёт ничего. `pochta-rossii.ru` — полное название Почты России латиницей, тоже 0. Это обратная сторона G-02: одно правило сразу и слишком строгое, и слишком мягкое.
+
+---
+
+## G-15. Упавший элемент `/batch` выглядит как «0 баллов»
+
+- **Зона:** сервер
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да, на бою.
+- **Что не так:** для элемента, который не досчитался, отдаётся `risk_score 0, is_phishing False` при вердикте SUSPICIOUS — балл противоречит порогам, а признака «не проверено» нет.
+- **Как воспроизвести:**
+
+```bash
+curl -s -m 90 -X POST https://phishguard-ayrt.onrender.com/batch -H 'content-type: application/json' \
+  -d '{"urls":["https://login.microsoftonline.com/?x=1"]}'
+# risk_score 0, verdict SUSPICIOUS, is_phishing false, confidence 0.0, reasons ["Проверка не завершилась — повторите попытку"]
+```
+
+- **Ожидали:** явная пометка «не проверено», балл не 0.
+- **Где в коде:** `backend/main.py:542-550`.
+- **Заметка:** клиент API, который сортирует по `risk_score` или смотрит `is_phishing`, получит «самый безопасный адрес». Триггер — G-01.
+
+---
+
+## G-16. Одна старая запись в URLhaus на хост — 45 баллов навсегда
+
+- **Зона:** сервер / внешние базы
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** балл — да, на бою. Что записи старые/неактивные — по коду, ключа URLhaus для прямого запроса нет.
+- **Что не так:** `host_listed = url_count > 0` — статус записей (`online`/`offline`) и их даты не учитываются.
+- **Как воспроизвести:** скрипт из G-02, адрес `https://example.org/`.
+- **Получили:** 45 SUSPICIOUS, «С этого хоста уже раздавали вредоносное ПО (зафиксировано ссылок: 1)». По агенту `example.com` — 45 при 4 записях, `www.example.com` — 0.
+- **Где в коде:** `backend/pipeline/reputation.py:78-86`, вес — `backend/pipeline/scorer.py:236`.
+- **Заметка:** сайт, который однажды взломали и вычистили, «подозрительный» навсегда.
+
+---
+
+## G-17. `www.spbu.ru` — 40 «ПОДОЗРИТЕЛЬНО» из-за формы на другой домен
+
+- **Зона:** ложные тревоги (уровень страницы)
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да, на бою. Причину не разбирали — вне зон охоты.
+- **Как воспроизвести:** скрипт из G-02, адрес `https://www.spbu.ru/`.
+- **Получили:** 40 SUSPICIOUS — `PAGE_CROSS_DOMAIN_FORM` 30 + `PAGE_HIDDEN_INPUTS` 10. По агенту так же `login.gov` 42, `hh.ru` 30.
+- **Ожидали:** SAFE.
+- **Где в коде:** не искали; похоже, поисковые и сторонние формы (не формы входа) считаются «форма уходит на чужой домен».
+
+---
+
+## G-18. Второй одновременный поток того же адреса не получает ни одного `stage`
+
+- **Зона:** поток
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да.
+- **Что не так:** докладчик прогресса живёт в `_factory` первого запроса; остальные ждут его результат через `single_flight` и о ходе работы не узнают.
+- **Как воспроизвести:** из `backend/`: подменить `main._run_pipeline` обёрткой, которая трижды делает `sleep(0.3)` + `progress(stage)` и затем зовёт настоящий; два `httpx.AsyncClient(transport=ASGITransport(app=main.app)).stream("POST", "/scan/stream", ...)` на один адрес через `asyncio.gather`.
+- **Получили:** `A ['start', 'stage', 'stage', 'stage', 'done']`, `B ['start', 'done']`. В браузере (агент) вкладка B все 6 секунд стоит на 10 % «Иду по ссылке до конца...». На бою (агент) — 2 события против 11.
+- **Ожидали:** у B те же этапы.
+- **Где в коде:** `backend/main.py:302-322`, `backend/cache.py:97-99`.
+- **Заметка:** сценарий реальный — одну фишинговую ссылку рассылают по друзьям. Это ровно «анимация вместо правды», которую поток закрывал. `done` доезжает до всех, результаты одинаковые.
+
+---
+
+## G-19. Телефон: отменённая проверка рисует свой прогресс поверх новой
+
+- **Зона:** интерфейс
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да, сценарием агента на его заглушке.
+- **Что не так:** «Отменить» только увеличивает `mScanToken`; `onStage` и таймеры «сервер просыпается» токен не проверяют, запрос не обрывается.
+- **Как воспроизвести:** 390 px; проверка A с этапами раз в секунду, на 2.5 с «Отменить», сразу проверка B, у которой заголовки приходят через 9 с.
+- **Получили:** экран B первые 9 с показывает этапы A (до 80 %, шаги DDDN), на 6-й секунде таймер A пишет «Сервер просыпается…», на 9-й полоса прыгает назад на 8 %. Вердикт A поверх B не попадает — проверка токена на `index.html:2817` работает.
+- **Где в коде:** `index.html:2870` (отмена), `index.html:2767-2783` (таймеры и `onStage`).
+- **Заметка:** отменённый запрос доезжает до конца на сервере и тратит лимит.
+
+---
+
+## G-20. Телефон: полоса едет назад, галочка шага гаснет
+
+- **Зона:** интерфейс
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да.
+- **Что не так:** в `STAGE_TO_MOBILE_STEP` у `ai` шаг 3, а идущие за ним `tls` и `ct` — на шаге 2.
+- **Как воспроизвести:** 390 px, этапы приходят в порядке `PIPELINE_STAGES`.
+- **Получили:** «Спрашиваю языковую модель...» 80 % DDDN → «Смотрю сертификат...» 56 % DDN. → «Читаю саму страницу...» 80 %.
+- **Где в коде:** `index.html:1848-1854`.
+- **Заметка:** на бою уровень Claude выключен и отвечает мгновенно, поэтому сейчас срабатывает редко. Как только появится ключ — постоянно.
+
+---
+
+## G-21. Телефон: смена языка во время проверки
+
+- **Зона:** интерфейс
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да.
+- **Что не так:** у `#mWorkSub` стоит `data-i18n="m_working_sub"`, и `applyLang` затирает текущую подпись; таймеры берут текст из `T`, запомненного при старте.
+- **Как воспроизвести:** 390 px, холодный старт 30 с, на 8-й секунде переключить на EN.
+- **Получили:** «Сервер просыпается, это займёт до минуты...» → «This takes a couple of seconds» (неправда при холодном старте), на 26-й секунде — русское «Ещё чуть-чуть, почти готово...» в английском интерфейсе.
+- **Где в коде:** `index.html:476` (`#mWorkSub`), `index.html:2740`, `index.html:2768-2769`.
+
+---
+
+## G-22. Десктоп: клик по истории во время проверки — в поле один адрес, вердикт другого
+
+- **Зона:** интерфейс
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да.
+- **Что не так:** клик по строке истории меняет текст в поле ввода, а `startScan` молча выходит из-за `isScanning`.
+- **Как воспроизвести:** 1280 px; проверить безопасный адрес, во время проверки кликнуть строку истории с опасным.
+- **Получили:** в поле `https://evil-first.com/...`, под ним крупное «БЕЗОПАСНО» — вердикт для `safe-second.com`. Строка TARGET и хост в разборе верные, но глаз первым видит опасный адрес рядом с зелёным вердиктом.
+- **Где в коде:** `index.html:2688-2692`.
+
+---
+
+## G-23. `https:\evil.top/` браузер открывает, а страница и сервер отказывают с неверной причиной
+
+- **Зона:** кривой ввод
+- **Серьёзность:** средняя
+- **Проверил сам запуском:** да — Chromium `new URL()`, `validateUrl` в странице и `ScanRequest` на сервере.
+- **Что не так:** два расхождения:
+  1. сервер приводит разделитель только при ≥2 слешах (`len(rest) - len(stripped) < 2`), а Chromium для http/https съедает любое число, в том числе один и ноль;
+  2. страница схему с обратными слешами не узнаёт вообще (`/^https?:\/\//`), дописывает `https://` спереди и получает хост `https`.
+- **Как воспроизвести:**
+
+```bash
+cd backend && python3 -c "
 from models import ScanRequest
-import idna
-for h in ['сбeрбанк.com','аpple.com']:
-    ace = '.'.join(idna.encode(l, uts46=True).decode() for l in h.split('.'))
-    for form in (h, ace):
-        r = sc(ScanRequest(url='https://'+form+'/').url)
-        heavy = [(s.code,s.weight) for s in r.signals if s.weight>=20]
-        print(f'{r.risk_score:3d} {r.verdict.value:12s} весомых={len(heavy)} {heavy}  {form}')
+for u in ['https:'+chr(92)*2+'evil.top'+chr(92)+'login', 'https:'+chr(92)+'evil.top/', 'https:/evil.top/']:
+    try: print(repr(u), '->', ScanRequest(url=u).url)
+    except Exception: print(repr(u), '-> 422')
 "
-grep -n 'brand.kind == \"homograph\"' backend/pipeline/scorer.py
+# двойной обратный -> https://evil.top/login; одинарный -> 422; https:/evil.top/ -> 422
 ```
 
-- **Ожидали:** один факт — один весомый признак, как требует `tests/test_no_conflicts.py`.
-- **Получили:** `сбeрбанк.com` (латинская `e` внутри кириллицы) → `80 PHISHING`, два весомых признака `[('MIXED_SCRIPTS', 45), ('PUNYCODE', 30)]`. Для сравнения `аpple.com` → один признак `BRAND_HOMOGRAPH` 60.
-- **Где в коде:** `backend/pipeline/scorer.py:496`.
-- **Почему не ловится тестами:** `MIXED_SCRIPTS` не встречается в тестах **ни разу**, а в списке `ONE_FACT_URL` (`tests/test_no_conflicts.py:126-131`) случая со смешением письменностей нет.
-- **Заметка:** побочно — бренд в таком домене не опознаётся вообще (`brand=None`), то есть `сбeрбанк.com` не считается подделкой под Сбербанк. Это же даёт лишние 30 баллов японским доменам из F-02.
+В браузере на странице: `validateUrl('https:\\\\evil.top\\login')`, `validateUrl('HTTPS:\\\\sber-vhod.top')`, `validateUrl('https:\\evil.top/')` — все `{"ok":false,"msg":"Адрес должен содержать точку и домен верхнего уровня"}`, а `new URL(...)` для всех трёх даёт `https://evil.top/...` / `https://sber-vhod.top/`.
+
+- **Ожидали:** проверить то, куда реально уйдёт браузер.
+- **Получили:** страница отказывает даже там, где сервер считает (`HTTPS:\\sber-vhod.top` на сервере — 92 ОПАСНО); отказ объясняет причину неправильно — зона в адресе есть.
+- **Где в коде:** `backend/normalize.py:113-125` (`normalize_scheme_separator`; докстринг обещает «любое число слешей»), `index.html:1454` (`validateUrl`).
+- **Заметка:** «БЕЗОПАСНО» нигде не показывается, поэтому не высокая. В заметках 20 сентября вариант с одним слешем записан как закрытый, но тест (`test_second_hunt.py:226-228`) проверяет только `\\` и `/\`.
 
 ---
 
-## Находка F-14. Бренд в чужом домене сам по себе никогда не даёт «ОПАСНО»
+## G-24. Десктоп: смена языка во время проверки — подписи и кнопка на старом языке
 
-- **Зона:** пороги
-- **Серьёзность:** средняя
-- **Проверил сам запуском:** да
-- **Что не так:** `brand_impersonation` весит 45, `trigger_keywords` — 12, вместе 57 при пороге 60. Классические фишинговые домены на выдержанном домене в обычной зоне упираются в «ПОДОЗРИТЕЛЬНО» и не доходят до «ОПАСНО».
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import show
-from models import DomainAgeResult, CtResult
-A = DomainAgeResult(checked=True, age_days=400, source='rdap')
-C = CtResult(checked=True, first_seen_days=400, total_certs=5)
-for u in ['https://sberbank-login.ru/','https://gosuslugi-vhod.ru/auth','https://vk-restore.ru/',
-          'https://wildberries-kabinet.ru/','https://tinkoff-support.ru/help']:
-    show(u, age=A, ct=C)
-"
-```
-
-- **Ожидали:** «ОПАСНО». Чужой бренд в домене — самая сильная улика, какая у сервиса есть.
-- **Получили:** `sberbank-login.ru`, `gosuslugi-vhod.ru`, `tinkoff-support.ru` → 57 SUSPICIOUS; `vk-restore.ru`, `wildberries-kabinet.ru` → 45 SUSPICIOUS. Порог пробивают только за счёт дешёвой зоны или свежей регистрации — а и то и другое мошенник легко обходит.
-- **Заметка:** это не «поднять вес до 60», а разговор о том, должен ли один признак решать вердикт. Но сейчас получается, что самая сильная улика сервиса по определению не может дать красный вердикт, и это стоит проговорить вслух.
-
----
-
-## Находка F-15. IPv6: страница считает, сервер отказывается
-
-- **Зона:** два движка
-- **Серьёзность:** средняя
-- **Проверил сам запуском:** да
-- **Что не так:** проверка «у хоста должен быть домен верхнего уровня» смотрит на `host.startswith("[")`, но `urlsplit(...).hostname` скобки уже снял — условие мёртвое, и все IPv6-адреса уходят в 422. Текст отказа для IPv6 бессмысленный.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'.')
-from models import ScanRequest
-for u in ['https://[2001:db8::1]/','https://[::1]/','https://[2606:4700:4700::1111]/']:
-    try: print('ПРОШЁЛ', u, '->', ScanRequest(url=u).url)
-    except Exception as e: print('ОТКАЗ ', u, '|', str(e).split('Value error, ')[-1].split('[')[0].strip()[:80])
-"
-```
-
-- **Ожидали:** IPv6 проверяется как IP-адрес.
-- **Получили:** все три → `ОТКАЗ | В адресе нет доменной зоны — после точки должно быть окончание вроде .ru или .com`. Движок страницы на том же адресе даёт `40 ПОДОЗРИТЕЛЬНО` с `IP_IN_URL`.
-- **Где в коде:** `backend/models.py:95`.
-- **Заметка:** эта находка была и в прошлой охоте (F-41 от 18 сентября) и осталась незакрытой.
-
----
-
-## Находка F-16. Отказ с враньём в тексте на адресе, который браузер открывает
-
-- **Зона:** регрессии
-- **Серьёзность:** средняя
-- **Проверил сам запуском:** да
-- **Что не так:** `https:\\evil.top/` браузер открывает как `evil.top` (обратный слеш по стандарту WHATWG равен обычному). Мы отказываемся проверять, и текст отказа говорит про отсутствующую доменную зону, хотя `.top` на месте.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'.')
-from models import ScanRequest
-u = 'https:\\\\\\\\evil.top/'
-try: print('ПРОШЁЛ ->', ScanRequest(url=u).url)
-except Exception as e: print('ОТКАЗ:', str(e).split('Value error, ')[-1].split('[')[0].strip()[:90])
-"
-cd /home/user/phishguard && NODE_PATH=/opt/node22/lib/node_modules node -e "
-const {chromium}=require('playwright');
-(async()=>{const b=await chromium.launch({executablePath:'/opt/pw-browsers/chromium-1194/chrome-linux/chrome'});
- const p=await b.newPage();
- console.log('браузер идёт на:', await p.evaluate(()=>new URL('https:\\\\\\\\evil.top/').host));
- await b.close();})()"
-```
-
-- **Ожидали:** либо проверяем `evil.top`, либо отказываем с честным объяснением.
-- **Получили:** браузер идёт на `evil.top`, мы отвечаем «В адресе нет доменной зоны».
-- **Где в коде:** `backend/models.py`, `normalise_url()`.
-
----
-
-## Находка F-17. Структурный шум складывается в приговор без единой улики обмана
-
-- **Зона:** пороги
+- **Зона:** интерфейс
 - **Серьёзность:** низкая
-- **Проверил сам запуском:** да
-- **Что не так:** нестандартный порт (25), `http` вместо `https` (15) и длинный адрес (15) вместе дают 55 — «ПОДОЗРИТЕЛЬНО», хотя ни один из них не говорит об обмане. С IP вместо домена выходит 80 «ОПАСНО».
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import sys; sys.path.insert(0,'/tmp/pg')
-from verify import show
-from models import DomainAgeResult, CtResult
-A = DomainAgeResult(checked=True, age_days=4000, source='rdap')
-C = CtResult(checked=True, first_seen_days=3500, total_certs=200)
-for u in ['http://jira-prod-01.corp.example.com:8443/browse/PROJ-1234?filter=my-open-issues&sort=updated',
-          'http://build-agent-07.ci.internal.example.com:9090/job/nightly-build-2026/lastSuccessfulBuild/artifact/',
-          'http://192.0.2.10:8080/dashboard']:
-    show(u, age=A, ct=C)
-"
-```
-
-- **Ожидали:** внутренние адреса компании — это не фишинг.
-- **Получили:** 40 SUSPICIOUS, 55 SUSPICIOUS, 80 PHISHING.
-- **Заметка:** спорно, считать ли корпоративные адреса целевой аудиторией сервиса. Записываю как наблюдение: три признака, каждый из которых сам по себе не про обман, складываются в красный вердикт.
+- **Проверил сам запуском:** да.
+- **Что не так:** `T` запоминается при старте проверки.
+- **Получили:** после EN подпись «Сервер просыпается…», на 25 с — «Ещё чуть-чуть…» по-русски; после проверки кнопка «Проверить», полоса «Готово». Во время проверки заблокированная кнопка показывает «Scan» вместо «...» (у неё `data-i18n`).
+- **Где в коде:** `index.html:2283`, `2317-2318`, `2334`, `2344`, `2355`, `2363`, `2369`.
 
 ---
 
-## Находка F-18. `t.me` и `telegra.ph` в бою помечены из-за трёх ссылок
+## G-25. При таймауте отменённые уровни докладываются как завершённые
 
-- **Зона:** живой сайт
-- **Серьёзность:** высокая
-- **Проверил сам запуском:** да, на живом сайте
-- **Что не так:** признак «с этого хоста уже раздавали вредонос» считает ссылки по хосту целиком. Для больших площадок правку 19 сентября сделали — `github.com`, `docs.google.com` и `dropbox.com` теперь чисты. Но `t.me` и `telegra.ph` под неё не попали, и трёх ссылок на весь Telegram хватает, чтобы пометить любую страницу площадки.
-- **Как воспроизвести:**
-
-```bash
-cd /home/user/phishguard/backend && python3 -c "
-import httpx, time
-for u in ['https://github.com','https://docs.google.com/document/d/abc/edit','https://dropbox.com',
-          'https://t.me/durov','https://t.me/sberbank','https://telegra.ph/test']:
-    d = httpx.post('https://phishguard-ayrt.onrender.com/scan', json={'url':u}, timeout=150).json()
-    rep = d['details'].get('reputation', {})
-    sig = [(s['code'], s['weight']) for s in d['signals'] if s['weight']]
-    print(f\"{d['risk_score']:3d} {d['verdict']:10s} {u[:40]:40s} host_listed={rep.get('host_listed')} ссылок={rep.get('host_url_count')} {sig}\")
-    time.sleep(2.6)
-"
-```
-
-- **Ожидали:** SAFE. `t.me/durov` — канал основателя Telegram.
-- **Получили:**
-
-```
-  0 SAFE       https://github.com                       []                      <- починено 19 сентября
-  0 SAFE       https://docs.google.com/document/d/abc   []                      <- починено
-  0 SAFE       https://dropbox.com                      []                      <- починено
- 45 SUSPICIOUS https://t.me/durov       host_listed=True ссылок=3  [('URLHAUS_HOST', 45)]
- 80 PHISHING   https://t.me/sberbank    host_listed=True ссылок=3
- 50 SUSPICIOUS https://telegra.ph/test  host_listed=True ссылок=3
-```
-
-- **Заметка:** `t.me/sberbank` набирает 80 «ОПАСНО», потому что к этому признаку прибавляется F-12 (`PAGE_BRAND_MISMATCH` за упоминание Сбербанка на его же официальном канале). Две ошибки складываются в красный вердикт на официальном канале банка.
-  Хорошая новость внутри плохой: признак больше не поднимает балл до пола 90 и не отменяет потолок доверия — самая тяжёлая часть старой находки закрыта. Осталась доля хоста: **три ссылки на весь Telegram** не должны ничего значить. Смотреть надо на долю вредоносного к общему объёму, а не на сам факт.
+- **Зона:** поток
+- **Серьёзность:** низкая
+- **Проверил сам запуском:** по коду (`finally` в `_staged` срабатывает и на CancelledError); прогон агента: дедлайн 1 с, `ct` и `page` по 5 с — на 1.02 с приходят `stage ct` и `stage page`, следом `error 504`.
+- **Где в коде:** `backend/main.py:211-216`.
+- **Заметка:** вред мгновенный — следом приходит error.
 
 ---
 
-## Наблюдения по живому сайту (не находки, но важные факты)
+## G-26. Если читатель ушёл, внутренняя ошибка проверки не попадает в лог
 
-- **Код на Render совпадает с репозиторием.** `/health` отдаёт версию `1.1.0`, но поведение — от 19 сентября: `госуслуги.рф` в бою даёт 50 с `BRAND_IMPERSONATION`, а это регрессия свежих правок (F-03). Значит развёрнут текущий код, и расхождения бой/локально можно трактовать как настоящие.
-- **Находки подтверждаются в бою:** F-01 (`xn--80aabat1afiqbdhvl6097h.xn--p1ai/vhod` → 15 SAFE), F-02 (`xn--t8jx82hdc.com` → 80 PHISHING), F-03 (`госуслуги.рф` → 50), F-04 (`alfa-remont.ru` → 45).
-- **Холодный старт — 50 секунд.** Первый запрос после простоя: 50.4 с. Дальше 3–9 с. Дедлайн при этом работает: `login.microsoftonline.com/common/oauth2/v2.0/authorize?...` отдал честный **HTTP 504** с русским текстом «Проверка заняла слишком много времени». То есть таймаут не врёт — но настоящую страницу входа Microsoft сервис проверить не может вовсе.
-- **Достоверность считается честно:** 1.00 там, где ответили все уровни, 0.43–0.57 на доменах, где часть источников молчит.
+- **Зона:** поток
+- **Серьёзность:** низкая
+- **Проверил сам запуском:** нет, по коду + прогон агента (lexical бросает `ZeroDivisionError`: читатель дочитал — traceback в логе; ушёл после `start` — ни строчки).
+- **Где в коде:** `backend/main.py:419-420` (колбэк зовёт `t.exception()` и ничего не пишет), логирование только на `main.py:457`.
+
+---
+
+## G-27. Отмена лидера `single_flight` раздаётся всем ждущим как CancelledError
+
+- **Зона:** ревью кода
+- **Серьёзность:** низкая, скрытая
+- **Проверил сам запуском:** нет, прогон агента: `follower -> CancelledError | task.cancelled(): True`.
+- **Что не так:** `future.set_exception(CancelledError)` уходит в общий future; в потоке это дало бы обрыв без `done` и без `error` (`main.py:454` пробрасывает CancelledError).
+- **Где в коде:** `backend/cache.py:101-110`.
+- **Заметка:** боевого триггера агент не нашёл: отключение клиента `/scan` лидера не отменяет (uvicorn 0.54 / Starlette 1.7, проверено), дедлайн `/batch` срабатывает позже внутреннего. Бомба на будущее.
+
+---
+
+## G-28. `/batch` списывает из лимита один запрос на всю пачку
+
+- **Зона:** сервер
+- **Серьёзность:** низкая
+- **Проверил сам запуском:** по коду (`limiter.check` вызывается один раз на HTTP-запрос); агент видел `X-RateLimit-Remaining` 27 → 26 после пачки из 4.
+- **Что не так:** 30 × 20 = 600 проверок в минуту с одного адреса, хотя лимит заявлен как защита от «усилителя трафика».
+- **Где в коде:** `backend/rate_limit.py:92-103`.
+
+---
+
+## G-29. Кеш не нормализует адрес
+
+- **Зона:** сервер
+- **Серьёзность:** низкая
+- **Проверил сам запуском:** да.
+- **Как воспроизвести:**
+
+```bash
+cd backend && python3 -c "
+from models import ScanRequest
+for u in ['github.com','https://github.com/','HTTPS://GITHUB.COM/']: print(repr(ScanRequest(url=u).url))"
+# 'https://github.com'  'https://github.com/'  'HTTPS://GITHUB.COM/'
+```
+
+- **Получили:** три разных ключа кеша → три полные проверки (агент: в пачке все три `cached: false`, бой и локально).
+- **Где в коде:** `backend/models.py` (валидатор `ScanRequest.url`), ключ — `backend/main.py:_scan`.
+
+---
+
+## G-30. У части ошибок нет поля `code`
+
+- **Зона:** сервер
+- **Серьёзность:** низкая
+- **Проверил сам запуском:** нет, прогон агента: отказ `/batch` из-за кривого адреса и 504 от `/scan` — `{"detail": ...}` без `code`; 422 валидатора и 429 — с `code`.
+- **Где в коде:** `backend/main.py` — `HTTPException` в `_scan` и `scan_batch`.
+
+---
+
+## G-31. События SSE с `\r\n\r\n` не разбираются
+
+- **Зона:** интерфейс
+- **Серьёзность:** низкая
+- **Проверил сам запуском:** по коду (`buffer.indexOf('\n\n')`); прогон агента: STREAM_TRUNCATED → `/scan`, прогресс стоит на 5 %.
+- **Где в коде:** `index.html:1909`.
+- **Заметка:** спецификация SSE разрешает CRLF и CR; наш сервер шлёт `\n\n`, подставить может только прокси. Неверного вердикта нет — выручает запасной путь.
+
+---
+
+## G-32. Поворот телефона во время проверки — прогресс и результат пропадают
+
+- **Зона:** интерфейс
+- **Серьёзность:** низкая
+- **Проверил сам запуском:** да.
+- **Получили:** проверка начата при 390, поворот до 844×390: `#mobileApp` скрыт, `#loadingBar` не показан, результат на десктопном слое не появляется — пустая форма. Результат есть в мобильном слое, после поворота обратно.
+- **Заметка:** следствие раздельных слоёв, а не наложение. Баг или так задумано — решать автору.
+
+---
+
+## G-33. Без Tailwind полоска прогресса на десктопе высотой 0 px
+
+- **Зона:** интерфейс
+- **Серьёзность:** низкая
+- **Проверил сам запуском:** да (Tailwind заблокирован через `page.route`).
+- **Получили:** дорожка и заполнение `h: 0`, видна только подпись этапа. С Tailwind — 2 px. Наложения слоёв на 390/700/1280/1440 нет.
+- **Где в коде:** `index.html:347-348` (`h-0.5` / `h-full` только от Tailwind, в аварийном CSS строчки нет).
 
 ---
 
@@ -753,28 +585,18 @@ for u in ['https://github.com','https://docs.google.com/document/d/abc/edit','ht
 
 | Заявка агента | Почему отбросили |
 |---------------|------------------|
-| «Достоверность 1.0 при трёх выключенных уровнях» | На живом сайте выключен **один** уровень (`ai`, `skipped=True`), остальные семь `checked=True`. Исключение намеренное и как раз почищено 19 сентября. Не находка. |
-| «`accounts.google.com`, `esia.gosuslugi.ru`, `passport.yandex.ru`, `github.com/login` → 30 SUSPICIOUS» | У меня 20 SAFE. Механизм верен (F-11), но порога эти адреса не пробивают. Цифры агента завышены. |
-| «Сервер даёт `xn--micrsoft-zwg.com` 45» | У меня 30. Класс подтверждён (F-10), цифра нет. |
-| «Японские домены дают 80» | У меня 75 (агент считал вместе с `DOMAIN_AGE_UNKNOWN`). Класс подтверждён (F-02). |
-| «`t.me/sberbank` → 35 без содержимого страницы» | Голый `t.me/sberbank` даёт **0 SAFE**. 35 появляется только когда уровень страницы принёс бренд в тексте. В F-12 это оговорено. |
-| «`.hidden` перебивает `md:flex`, на десктопе нет меню и переключателя языка» (старая F-29) | **Больше не воспроизводится.** Правило загнали в `@media (max-width:640px)` 19 сентября. Замер с Tailwind на 1280: меню `flex 259x25`, кнопка EN `30x23`, достижима кликом. Починено, не трогать. |
-| «`SHORTENER` только на странице, сервер его не ставит» | Артефакт харнесса: он передаёт `redirects=None`, а сервер добавляет признак только когда уровень переадресаций отработал. На живом сервере `bit.ly/abc` → 30 SUSPICIOUS с `SHORTENER` + `CROSS_DOMAIN_REDIRECT`. Не баг. |
-| «IP в десятичной и шестнадцатеричной записи: питон видит не тот хост» | Страница шлёт серверу уже нормализованный браузером `href`, сервер получает `https://127.0.0.1/`. Оба движка дают 40 `IP_IN_URL`. Не расхождение. |
-| «Нормализация уводит на домен, отличный от браузерного» | Кроме F-16 не нашлось. Сверено с настоящим Chromium на 13 хитрых адресах (`evil.top\@bank.ru`, `sberbank.ru／@evil.top`, `google.com。evil.ru`, `a@b@evil.top`, `bank.ru%2Flogin@evil.top` и других) и 11 с невидимыми и полноширинными символами — совпадение полное. Правки 19 сентября работают. |
-| «Падения на кривом вводе в новом коде» | 30 000 случайных адресов через `normalize_authority` → `encode_unparseable_userinfo` → `analyze`: **ноль исключений**. |
-| «Потолки глушат фишинг на площадках» | Не подтвердилось, правка работает: 12 фишинговых адресов на `pages.dev`, `web.app`, `workers.dev`, `github.io`, `netlify.app`, `vercel.app`, `docs.google.com`, `sites.google.com`, `telegra.ph`, `t.me`, `s3.amazonaws.com`, `storage.googleapis.com` дают 90-100 PHISHING. |
-| «Синонимы брендов сломали старый детект» | Наоборот, стало лучше: `сбербанк-онлайн.рф` 5→50, `sber-vhod.ru` 17→62, `vk-login.ru` 17→62, `vk-golosovanie.ru/konkurs-detey` 27→100. |
-| «Обход лимита запросов в новом `rate_limit.py`» | Не нашли. Правка `max(1, TRUSTED_PROXY_HOPS)` и отказ от `X-Real-IP` закрыли обе прошлые дыры. |
-
-## Что правки 19 сентября починили (проверено, не откатывать)
-
-`société.fr` 70→5 · `bücher.de`, `мвд.рф`, `www.мвд.рф` чисто · `культура.рф/конкурс` 52→5 · `нацпроекты.рф/голосование` 52→5 · `%2F` в логине адреса 5→100 · обратный слеш в хосте разбирается по-браузерному · `posylka-dostavka.ru/oplatit` 5→40 · `shtraf-gibdd.ru/oplatit-so-skidkoy` 5→40 · `golosovanie-za-rebenka.ru` 17→52 · `vote-for-kids.ru/konkurs` 27→62 · IP в десятичной записи 42→60 · IP в шестнадцатеричной 30→60 · старая F-29 (шапка десктопа) закрыта.
-
-Сплошной прогон 97 настоящих сайтов (банки, госорганы, магазины, СМИ, операторы, международные) дал **ровно одно** расхождение со старым кодом и ровно один балл ≥ 30 — `госуслуги.рф`, это F-03.
+| `golosovanie-konkurs.ru/vote` — 27 SAFE, «схема голосования не поднимает вердикт» | так задумано: схема — это связка «проголосуй» + «за ребёнка», одно «голосование + конкурс» нарочно не схема (`test_scam_pattern_needs_two_different_ideas`). Настоящий пропуск рядом — G-09 |
+| `appleinsider.de` — 60 PHISHING на бою | припаркованный домен («No advertisers available»), не честный сайт; агент выкинул сам |
+| `sber-bank.by`, `alfa-bank.kz`, `wb-bank.ru`, `pochta-bank.ru`, `vtb-bank.by`, часть `gosuslugi*` как ложные тревоги | хозяева не подтверждены: сайты из контейнера не открылись, WHOIS закрыт. Оставлены только как иллюстрация механизма в G-11 |
+| `CERT_VERY_NEW` и `DOMAIN_AGE_UNKNOWN` на всех адресах при локальном прогоне | окружение контейнера: прокси подменяет сертификаты, порт 43 закрыт |
+| SAFE с достоверностью 0.43 на несуществующих доменах | страница сама переводит в «НЕ ПРОВЕРЕНО» (`applyConfidence`, порог 0.5) — работает правильно |
+| «Медленный читатель» потока | агент не мерил, вывел из кода (событий ≤12, задача от читателя не зависит). Не находка и не проверено |
 
 ## Чего проверить НЕ удалось
 
-- **Живой сайт (зона 2)** — агента убил лимит сессии (HTTP 429) до того, как он что-либо записал. Точечные проверки я добил сам (F-18 и раздел наблюдений выше), но **систематического сравнения «бой против локального» на 30–40 адресах нет**, как и проверки ручки `/batch` и таймаутов под нагрузкой. Это первое, что стоит доделать следующей охотой.
-- **Уровень Claude** — ключ `ANTHROPIC_API_KEY` не задан ни локально, ни на Render.
-- **Поведение под нагрузкой** — утечки памяти, вытеснение кеша, лимит запросов на реальном потоке не проверялись.
+- **Лимит запросов на бою:** исходящий адрес песочницы меняется (агент видел 9 разных из `160.79.106.x`), счётчики перемешиваются, до 429 не дошли. Корректность `X-Forwarded-For` на Render отсюда не проверить.
+- **Поведение прокси Render на подвисшем соединении** (важно для G-05) — не проверяли.
+- **`microsoft365.com` на бою** — дважды 504 (вероятно, G-01), вердикт только офлайн.
+- **Уровень Claude** — ключ не задан; G-20 станет заметной, когда появится.
+- **Порядок этапов на бою** для G-20 — проверено на заглушке с этапами по порядку.
+- **Статус записей URLhaus** для G-16 — нет ключа для прямого запроса.

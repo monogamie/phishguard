@@ -116,6 +116,48 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+class BodyLimitMiddleware:
+    """Отказывает в слишком большом теле ДО того, как оно прочитано.
+
+    Чистый ASGI, а не `@app.middleware`: тот видит запрос, но не поток
+    тела, а без Content-Length (chunked) размер известен только по ходу."""
+
+    def __init__(self, app, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        declared = dict(scope["headers"]).get(b"content-length", b"0")
+        if not declared.isdigit() or int(declared) > self.max_bytes:
+            refusal = JSONResponse(status_code=413, content={
+                "detail": _BODY_TOO_LARGE, "code": "body_too_large"})
+            return await refusal(scope, receive, send)
+
+        seen = 0
+
+        async def counted_receive():
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > self.max_bytes:
+                    # Именно HTTPException: любое другое исключение при
+                    # чтении тела FastAPI превращает в 400.
+                    raise HTTPException(status_code=413, detail=_BODY_TOO_LARGE)
+            return message
+
+        await self.app(scope, counted_receive, send)
+
+
+_BODY_TOO_LARGE = "Запрос слишком большой."
+
+# Добавлен первым, то есть стоит ближе всех к маршрутам: отказ получает
+# заголовки CORS, а сам запрос уже посчитан лимитом частоты.
+app.add_middleware(BodyLimitMiddleware, max_bytes=settings.MAX_BODY_BYTES)
+
 # CORS. В проде ALLOWED_ORIGINS надо сузить до домена фронтенда:
 # "*" означает, что любой сайт может дёргать наш API от имени
 # браузера пользователя и расходовать наши квоты.
@@ -231,6 +273,10 @@ async def _run_pipeline(original_url: str,
 
     # ── Уровень 3 первым: он мгновенный и даёт хост для остальных ─
     lexical = lexical_analyzer.analyze(scanned_url)
+    # Исходный адрес разбираем тоже, если нас увели на другой домен:
+    # иначе всё, что было в нём написано, пропадает без следа.
+    origin_lexical = (lexical_analyzer.analyze(original_url)
+                      if redirects.changed_domain else None)
     await _report(progress, "lexical")
 
     # ── Уровни 1, 1b, 1c, 2 — параллельно ────────────────────────
@@ -286,6 +332,7 @@ async def _run_pipeline(original_url: str,
         reputation=reputation,
         domain_age=age,
         lexical=lexical,
+        origin_lexical=origin_lexical,
         redirects=redirects,
         ai=ai,
         tls=tls,
