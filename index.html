@@ -1301,8 +1301,13 @@ function needsALure(name, nameParts, cheapZone) {
 // `steamdb`. Зеркало _glued_without_a_lure из lexical_analyzer.py.
 function gluedWithoutALure(brand, tokens, cheapZone) {
     if (tokens.includes(brand) || cheapZone) return false;
+    // Похоже на собственный сайт бренда (`steamcommunlty` ≈ steamcommunity) —
+    // это опечатка, а не случайное слово. Как на сервере.
+    const ownNames = (BRANDS[brand] || []).map(d => d.split('.')[0])
+        .filter(n => n.length > brand.length);
     for (const token of tokens) {
         if (!token.includes(brand)) continue;
+        if (ownNames.some(n => levenshtein(token, n, 2) <= 2)) return false;
         const rest = token.split(brand).join(' ').split(' ').filter(Boolean);
         if (rest.some(p => KEYWORD_SET.has(p) || LURE_WORDS.has(p) || p === 'online')) return false;
     }

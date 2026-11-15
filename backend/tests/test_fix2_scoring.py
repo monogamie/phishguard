@@ -311,3 +311,18 @@ def test_g14_short_name_with_a_lure_is_caught(url):
                                  "https://pochta-service.ru/", "https://vk-studio.ru/"])
 def test_g14_ordinary_firms_stay_clean(url):
     assert la.analyze(url).brand_match is None, url
+
+
+@pytest.mark.parametrize("url", [
+    "https://steamcommunlty.com/tradeoffer/new",
+    "https://steamcommunnity.ru/id/x",
+    "https://steamcomminuty.com/",
+    "https://steampowerd.com/",
+])
+def test_typo_of_a_brand_own_site_is_not_forgiven_as_a_glued_word(url):
+    """Склейку бренда со словом простили ради `applebees` и `steamdb` —
+    и вместе с ними простили `steamcommunlty.com`, самую частую подделку
+    под Steam: было 55, стало 0. Слово, похожее на собственный сайт
+    бренда, — опечатка, а не случайность."""
+    m = la.analyze(url).brand_match
+    assert m is not None and m.brand == "steam", url

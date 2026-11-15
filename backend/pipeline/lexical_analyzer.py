@@ -347,9 +347,16 @@ def _glued_without_a_lure(brand: str, tokens: list[str],
     """
     if brand in tokens or zone_is_cheap:
         return False
+    # Имена собственных сайтов бренда длиннее самого бренда:
+    # `steamcommunity`, `steampowered`. Слово, похожее на такое имя, —
+    # опечатка в нём, а не случайность: `steamcommunlty.com`.
+    own_names = {d.split(".")[0] for d in BRAND_DOMAINS.get(brand, ())}
+    own_names = {n for n in own_names if len(n) > len(brand)}
     for token in tokens:
         if brand not in token:
             continue
+        if any(levenshtein(token, n, max_distance=2) <= 2 for n in own_names):
+            return False
         rest = token.replace(brand, " ").split()
         if any(piece in _TRIGGER_KEYWORDS_ALL or piece in LURE_WORDS
                or piece == "online" for piece in rest):
