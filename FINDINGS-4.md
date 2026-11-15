@@ -313,7 +313,7 @@ urljoin('https://a.com/x', '//[')"
 
   Сквозь сервер (агент): `/scan` → 500 «Внутренняя ошибка сервера»,
   `/scan/stream` → `event:error 500`, `/batch` → элемент с `risk_score 0` (G-15).
-- **Где:** `backend/url_resolver.py:138` (`next_url = urljoin(current, location.strip())`).
+- **Где:** `backend/url_resolver.py:137` (`next_url = urljoin(current, location.strip())`).
   В `page_analyzer.py` такой же вызов обёрнут в `try`.
 - **Чем опасно:** сканер честно представляется `PhishGuardBot`, и
   фишинговый сайт может отвечать ему так — вердикта не будет никогда.
@@ -335,7 +335,7 @@ urljoin('https://a.com/x', '//[')"
   исходном хосте, ни одного признака переадресации; при
   `Location: http://host1\@google.com/` — `scanned_url: google.com`, 15 SAFE,
   хотя браузер остаётся на первом хосте.
-- **Где:** `backend/url_resolver.py:138`, `backend/pipeline/page_analyzer.py:273`.
+- **Где:** `backend/url_resolver.py:137`, `backend/pipeline/page_analyzer.py:273`.
 - **Чем опасно:** `/\evil.top` — классический обход фильтра «только
   относительные пути» в открытых редиректах честных сайтов. Ссылка
   `доверенный.сайт/redirect?to=/\evil.top` получает вердикт доверенного
