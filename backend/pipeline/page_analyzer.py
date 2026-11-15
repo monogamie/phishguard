@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import codecs
 import logging
 import re
 from html.parser import HTMLParser
@@ -102,6 +103,11 @@ _BRAND_TEXT_RE = _brand_patterns()
 # Типы, которые точно не HTML. Всё остальное пробуем разобрать:
 # требовать text/html нельзя, поддельные страницы часто отдаются
 # с типом application/octet-stream или вообще без него.
+# Кодировку называет сам проверяемый сайт. `punycode` написан на чистом
+# питоне и на 256 КБ работает ~10 с, держа GIL: сервер в это время не
+# отвечает никому, и отдельный поток от этого не спасает.
+_SLOW_CODECS = frozenset({"punycode"})
+
 _BINARY_TYPES: tuple[str, ...] = (
     "image/", "video/", "audio/", "font/",
     "application/pdf", "application/zip", "application/x-", "application/gzip",
@@ -309,6 +315,8 @@ async def analyze_page(url: str) -> PageResult:
                               error="Слишком много редиректов")
 
         try:
+            if codecs.lookup(encoding).name in _SLOW_CODECS:
+                encoding = "utf-8"
             html = raw.decode(encoding, errors="replace")
         except (LookupError, UnicodeDecodeError):
             html = raw.decode("utf-8", errors="replace")

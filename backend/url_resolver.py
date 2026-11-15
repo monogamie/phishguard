@@ -133,10 +133,10 @@ async def resolve_final_url(url: str) -> RedirectInfo:
             info.resolved = True
             break
 
-        # urljoin: обрабатывает и //evil.com/x, и /x, и x.
-        next_url = urljoin(current, location.strip())
-
+        # urljoin: обрабатывает и //evil.com/x, и /x, и x. На битом
+        # IPv6-литерале (`//[`) он сам бросает ValueError.
         try:
+            next_url = urljoin(current, location.strip())
             scheme = urlsplit(next_url).scheme.lower()
         except ValueError:
             info.error = "Некорректный адрес в заголовке Location"
